@@ -43,7 +43,7 @@ ONElib.o: ONElib.c ONElib.h
 ### programs
 
 syng: syng.c syngbwt.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
 syngprune: syngprune.c seqio.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
