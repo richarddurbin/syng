@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 16 11:33 2024 (rd109)
+ * Last edited: Nov 26 00:07 2024 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -26,6 +26,8 @@
 
 #include "syng.h"
 
+/************************* thread functions ****************************/
+
 typedef struct {
   Seqhash  *sh ;
   KmerHash *kh ;        // read-only here
@@ -36,7 +38,9 @@ typedef struct {
   Array     sync ;      // of I64, if non-zero, found in kh; -ve if reverse direction
 } ThreadInfo ;
 
-static void *threadProcess (void* arg) // find the start positions of all the syncmers
+/***** threadProcessRead() handles input from SeqIO: maps sequences to sync,pos *****/
+
+static void *threadProcessRead (void* arg) // find the start positions of all the syncmers
 {
   ThreadInfo *ti = (ThreadInfo*) arg ;
   int i ;
@@ -65,6 +69,19 @@ static void *threadProcess (void* arg) // find the start positions of all the sy
     }
 
   newFree (uBuf, ti->kh->plen, U64) ;
+  return 0 ;
+}
+
+/***** threadProcessPath() handles input from 1path: maps sync/pos to sequence ******/
+
+
+static void *threadProcessPath (void* arg) // find the start positions of all the syncmers
+{
+  ThreadInfo *ti = (ThreadInfo*) arg ;
+  int i ;
+  I64 seqStart = 0 ;
+  I64 iSync ;
+  U64 *uBuf = new(ti->kh->plen,U64) ;
   return 0 ;
 }
 
@@ -198,20 +215,22 @@ static char usage[] =
   "  -zeroK                 : zero the kmer counts\n"
   "  -noNewK                : do not create new syncmers - convert unmatched syncmers to 0\n"
   "  -o <outfile prefix>    : [syngOut] applies to all write* options\n"
+  "  -histK                 : output quadratic histogram of kmer counts (after sequence processsing)\n"
   "  -writeK                : write the syncmers as a .1khash file\n"
   "  -writeKfa              : write the syncmers as a fasta file, with ending .kmer.fa.gz\n"
-  "  -histK                 : write a quadratic histogram of kmer counts\n"
-  "  -writeNewK             : write a .nk binary file of unmatched syncmers for sorting; implies -N\n"
-  "  -checkNewK             : deep dive into newK\n"
-  "  -histNewK              : write a quadratic histogram of new kmers; implies -N\n"
+  "  -writeNewK <file prefix> : write new syncmers as a .1khash file; implies -N\n"
   "  -writePath             : write a .1path file (paths of nodes)\n"
   "  -writeGBWT             : write a .1gbwt file (nodes, edges and paths in GBWT form)\n"
-  "  -fullPath              : write X and Y tags with non-syncmer sequence ends to .1path, .1gbwt\n"
+  "  -writeEnds             : write the non-syncmer ends of sequences to 1path or 1gbwt files\n"
   "  -writeSeq              : write a .1seq file (paths converted back to sequences)\n"
+  "  -newSummary            : summary of the new data set\n"
+  "  -filterG <nG>          : remove input sequences with runs of >nG consecutive Gs (bad Illumina reads)\n"
+  "  -filterQ <QT>          : remove input sequences with average quality score below QT\n"
+  "  -filterIllumina        : equivalent to -filterPolyG 60 -filterQual 30\n"
   "possible inputs are:\n"
   "  <sequence file>        : any of fasta[.gz], fastq[.gz], BAM/CRAM/SAM, .1seq\n"
-  "  <.1path file>          : sequences as lists of kmers, with optional prefix and suffix DNA\n"
-  "  <.1gbwt file>          : graph BWT with paths\n"
+  "  <.1path file>          : sequences as lists of kmers, with optional non-syncmer DNA ends\n"
+  "  <.1gbwt file>          : graph BWT with paths, with optional ends\n"
   "Operations are carried out in order as they are parsed, with some setting up future actions,\n"
   "e.g. changing the outfile prefix affects following lower case options for file opening\n"
   "Some output files, e.g. .1gbwt will be output at the end, after all inputs are processed,\n"
@@ -227,10 +246,11 @@ int main (int argc, char *argv[])
   SeqIO      *sio = 0 ;
   KmerHash   *kh = 0, *khNew = 0 ;
   OneSchema  *schema = oneSchemaCreateFromText (syngSchemaText) ;
-  OneFile    *ofSync = 0, *ofGBWT = 0, *ofPath = 0, *ofSeq = 0 ;
+  OneFile    *ofSync = 0, *ofGBWT = 0, *ofPath = 0, *ofSeq = 0, *ofNewK ;
   SyngBWT    *gbwtOut = 0 ;
   Params      params ;
-  bool        isAddSyncmers = true, isHistK = false, isHistNewK = false ;
+  bool        isAddSyncmers = true, isHistK = false, isWriteEnds = false ;
+  int         filterG = 0, filterQ = 0 ;
   I64         i, j ; // general purpose indices
   
   timeUpdate (0) ;
@@ -239,7 +259,7 @@ int main (int argc, char *argv[])
   params.w = PARAMS_W_DEFAULT ;
   params.seed = PARAMS_SEED_DEFAULT ;
 
-  U64 nSeq = 0, totSeq = 0, totSync = 0 ;
+  U64 nSeq = 0, nFilt = 0, totSeq = 0, totSync = 0 ;
   
   storeCommandLine (argc, argv) ;
   argc-- ; ++argv ;
@@ -312,11 +332,17 @@ int main (int argc, char *argv[])
 	argc -= 1 ; argv += 1 ;
       }
     else if (!strcmp (*argv, "-histK")) { isHistK = true ; --argc ; ++argv ; }
-    else if (!strcmp (*argv, "-histNewK")) { isHistNewK = true ; --argc ; ++argv ; }
-    else if (!strcmp (*argv, "-checkNewK"))
+    else if (!strcmp (*argv, "-writeNewK") && argc > 1)
       { khNew = kmerHashCreate (0, params.w + params.k) ;
-	--argc ; ++argv ;
+	ofNewK = oneFileOpenWriteNew (fnameTag(argv[1],"1khash"), schema, "khash", true, 1) ;
+	argc -= 2 ; argv += 2 ;
       }
+    else if (!strcmp (*argv, "-writeEnds")) { isWriteEnds = true ; --argc ; ++argv ; }
+    else if (!strcmp (*argv, "-filterG") && argc > 1)
+      { filterG = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
+    else if (!strcmp (*argv, "-filterQ") && argc > 1)
+      { filterQ = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
+    else if (!strcmp (*argv, "-filterIllumina")) { filterG = 60 ; filterQ = 30 ; --argc ; ++argv ; }
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   fprintf (stderr, "k, w, seed are %d %d %d\n", params.k, params.w, params.seed) ;
@@ -335,13 +361,8 @@ int main (int argc, char *argv[])
       newFree (sources, maxSources, char*) ;
     }
   
-  U64 nSeq0 = 0, totSeq0 = 0, totSync0 = totSync, syncMax0 = kmerHashMax(kh), nNew = 0 ;
+  U64 nSeq0 = 0, nFilt0 = 0, totSeq0 = 0, totSync0 = totSync, syncMax0 = kmerHashMax(kh), nNew = 0 ;
 
-  Array newKmers = 0 ;
-  if (!isAddSyncmers)
-    { KMERSIZE = ((params.w + params.k) + 31) >> 5 ;  // number of U64 needed to pack a kmer
-      newKmers = uArrayCreate (1 << 20, KMERSIZE*8) ; // use uArrayCreate because not a simple type
-    }
   Array seqDir = 0 ;
   if (ofPath) seqDir = arrayCreate(1024,char) ; // might be needed if we will flip
   
@@ -361,9 +382,12 @@ int main (int argc, char *argv[])
   int nSource = 0 ;
   while (argc--)
     { ++nSource ;
-      if (!(sio = seqIOopenRead (*argv, dna2indexConv, false)))
+      
+      if (!(sio = seqIOopenRead (*argv, dna2indexConv, (filterQ > 0))))
 	die ("failed to open read sequence file %s", *argv) ;
-      fprintf (stderr, "sequence file %d %s type %s ", nSource, *argv, seqIOtypeName[sio->type]) ;
+      if (filterQ > 0 && !sio->isQual)
+	die ("file %s has no qualities, but filterPolyG is set", *argv) ;
+      fprintf (stderr, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
       fflush (stderr) ;
       bool isDone = false ;
       while (!isDone) 
@@ -373,19 +397,29 @@ int main (int argc, char *argv[])
 	      arrayMax(ti->seqLen) = 0 ;
 	      int seqStart = 0 ;
 	      while (arrayMax(ti->seq) < 100<<20 && seqIOread (sio))
-		{ array(ti->seqLen, arrayMax(ti->seqLen), I64) = sio->seqLen ;
+		{ if (filterG)
+		    { int nG = 0 ;
+		      char *s = sqioSeq(sio) ;
+		      for (i = 0 ; i < sio->seqLen ; ++i)
+			if (*s++ != 2) nG = 0 ;
+			else if (++nG > filterG) { sio->seqLen = 0 ; ++nFilt ; break ; }
+		    }
+		  if (filterQ)
+		    { I64 totQ = 0 ;
+		      char *q = sqioQual(sio) ;
+		      for (i = 0 ; i < sio->seqLen ; ++i) totQ += *q++ ;
+		      if (totQ < filterQ * sio->seqLen) { sio->seqLen = 0 ; ++nFilt ; }
+		    }
+		  array(ti->seqLen, arrayMax(ti->seqLen), I64) = sio->seqLen ;
 		  array(ti->seq, seqStart+sio->seqLen, char) = 0 ;
 		  memcpy (arrp(ti->seq, seqStart, char), sqioSeq(sio), sio->seqLen) ;
 		  seqStart += sio->seqLen ;
-		  totSeq += sio->seqLen ; 
+		  totSeq += sio->seqLen ;
 		}
-	      if (!arrayMax(ti->seq)) // we are done
-		{ // nThread = i ;
-		  isDone = true ;
-		}
-	    }
+	      if (!arrayMax(ti->seq)) isDone = true ; // we are done after processing this lot
+	    } // loading thread
 	  for (i = 0 ; i < nThread ; ++i) // create threads
-	    pthread_create (&threads[i], 0, threadProcess, &threadInfo[i]) ;
+	    pthread_create (&threads[i], 0, threadProcessRead, &threadInfo[i]) ;
 	  for (i = 0 ; i < nThread ; ++i)
 	    pthread_join (threads[i], 0) ; // wait for threads to complete
 	  for (i = 0 ; i < nThread ; ++i) //
@@ -396,30 +430,26 @@ int main (int argc, char *argv[])
 	      int iRead ;
 	      for (iRead = 0 ; iRead < arrayMax(ti->posLen) ; ++iRead)
 		{ I64 posLen = arr(ti->posLen, iRead, I64) ;
-		  I64 *sync = syncList ;
-		  for (j = 0 ; j < posLen ; ++j, ++sync)
-		    if (*sync) // need to increment kh->count, because FindThreadSafe did not do that
-		      ++array(kh->count,((*sync >= 0) ? *sync : -*sync),I64) ;
-		    else if (isAddSyncmers)
-		      kmerHashAdd (kh, seq + posList[j], sync) ;
-		    else // write the canonicalised kmer into newKmers array
-		      { kmerHashFindThreadSafe (kh, seq + posList[j], 0,
-						arrayp(newKmers,arrayMax(newKmers),U64)) ;
-			if (khNew && !(++nNew % 100)) // print out high coverage new kmers
-			  { I64 syncNew ;
-			    kmerHashAdd (khNew, seq + posList[j], &syncNew) ;
-			    if (syncNew < 0) syncNew = -syncNew ;
-			    if (arr(khNew->count,syncNew,I64) >= 10)
-			      printf ("read %8lld syncNew %6lld %s pos %2lld in %s\n",
-				      nSeq, syncNew, kmerHashSeq(khNew,syncNew), posList[j], seq) ;
-			  }
-		      }
-		  if (ofGBWT && posLen)
-		    { oneInt(ofGBWT, 0) = nSource ;
-		      oneInt(ofGBWT, 1) = nSeq-nSeq0+1 ;
-		      oneWriteLine (ofGBWT, 'P', 0, 0) ;
-		      if (posLen > 1)
-			{ SyngBWTpath *sbp = syngBWTpathStart (gbwtOut, syncList[0]) ;
+		  if (posLen)
+		    { I64 *sync = syncList ;
+		      for (j = 0 ; j < posLen ; ++j, ++sync)
+			if (*sync) // need to increment kh->count, because FindThreadSafe could not
+			  ++array(kh->count,((*sync >= 0) ? *sync : -*sync),I64) ;
+			else if (isAddSyncmers)
+			  kmerHashAdd (kh, seq + posList[j], sync) ;
+			else if (khNew)
+			  kmerHashAdd (khNew, seq + posList[j], 0) ;
+		      if (ofGBWT) // add to the GBWT and write the path start info, and ends if nec
+			{ oneInt(ofGBWT, 0) = nSource ;
+			  oneInt(ofGBWT, 1) = nSeq-nSeq0+1 ;
+			  oneWriteLine (ofGBWT, 'P', 0, 0) ;
+			  if (isWriteEnds)
+			    { oneWriteLine (ofGBWT, 'X', posList[0], seq) ;
+			      oneWriteLine (ofGBWT, 'Y',
+					    arr(ti->seqLen,iRead,I64) - posList[posLen-1] - kh->len,
+					    seq+posList[posLen-1]) ;
+			    }
+			  SyngBWTpath *sbp = syngBWTpathStart (gbwtOut, syncList[0]) ;
 			  oneInt(ofGBWT, 0) = syncList[0] ;
 			  oneInt(ofGBWT, 1) = sbp->startCount ;
 			  oneInt(ofGBWT, 2) = posLen ;
@@ -433,47 +463,55 @@ int main (int argc, char *argv[])
 			    syngBWTpathAdd (sbp, -syncList[j], posList[j+1] - posList[j]) ;
 			  syngBWTpathFinish (sbp) ;
 			}
-		    }
-		  if (ofPath && posLen) // do this last because it can corrupt syncList[]
-		    { // test if worth flipping sites
-		      bool isFlip = false ;
-		      I64 *sync = syncList, sync0 = *sync++ ;
-		      for (j = 1 ; j < posLen ; ++j, ++sync)
-			if (*sync > sync0-64 && *sync < sync0+64) sync0 = *sync ;
-			else if (-*sync > sync0-64 && -*sync < sync0+64)
-			  { isFlip = true ; sync0 = -*sync ; }
-			else
-			  { isFlip = false ; break ; }
-		      if (isFlip)
-			{ arrayMax(seqDir) = 0 ;
-			  array(seqDir,posLen,char) = 0 ;
-			  for (j = 0 ; j < posLen ; ++j)
-			    if (syncList[j] >= 0)
-			      arr(seqDir,j,char) = '+' ;
+		      if (ofPath) // write the pathl do this last because it can corrupt syncList[]
+			{ oneInt(ofPath, 0) = nSource ;
+			  oneInt(ofPath, 1) = nSeq-nSeq0+1 ;
+			  oneWriteLine (ofPath, 'P', 0, 0) ;
+			  if (isWriteEnds)
+			    { oneWriteLine (ofPath, 'X', posList[0], seq) ;
+			      oneWriteLine (ofPath, 'Y',
+					    arr(ti->seqLen,iRead,I64) - posList[posLen-1] - kh->len,
+					    seq+posList[posLen-1]) ;
+			    }
+			  // test if worth flipping sites
+			  bool isFlip = false ;
+			  I64 *sync = syncList, sync0 = *sync++ ;
+			  for (j = 1 ; j < posLen ; ++j, ++sync)
+			    if (*sync > sync0-64 && *sync < sync0+64) sync0 = *sync ;
+			    else if (-*sync > sync0-64 && -*sync < sync0+64)
+			      { isFlip = true ; sync0 = -*sync ; }
 			    else
-			      { arr(seqDir,j,char) = '-' ;
-				syncList[j] = -syncList[j] ;
-			      }
+			      { isFlip = false ; break ; }
+			  if (isFlip)
+			    { arrayMax(seqDir) = 0 ;
+			      array(seqDir,posLen,char) = 0 ;
+			      for (j = 0 ; j < posLen ; ++j)
+				if (syncList[j] >= 0)
+				  arr(seqDir,j,char) = '+' ;
+				else
+				  { arr(seqDir,j,char) = '-' ;
+				    syncList[j] = -syncList[j] ;
+				  }
+			    }
+			  oneWriteLine (ofPath, 'z', posLen, syncList) ;
+			  oneWriteLine (ofPath, 'o', posLen, posList) ;
+			  if (isFlip) oneWriteLine (ofPath, 'd', posLen, arrp(seqDir,0,char)) ;
 			}
-		      oneInt(ofPath, 0) = nSource ;
-		      oneInt(ofPath, 1) = nSeq-nSeq0+1 ;
-		      oneWriteLine (ofPath, 'P', 0, 0) ;
-		      oneWriteLine (ofPath, 'z', posLen, syncList) ;
-		      oneWriteLine (ofPath, 'o', posLen, posList) ;
-		      if (isFlip) oneWriteLine (ofPath, 'd', posLen, arrp(seqDir,0,char)) ;
-		    }
-		  nSeq++ ; totSync += posLen ;
+		      posList += posLen ;
+		      syncList += posLen ;
+		      totSync += posLen ;
+		    } // posLen
+		  nSeq++ ; 
 		  seq += arr(ti->seqLen, iRead, I64) ;
-		  posList += posLen ;
-		  syncList += posLen ;
 		} // read
 	    } // thread
 	} // isDone: end of file
       seqIOclose (sio) ;
-      fprintf (stderr, "had %llu sequences %llu bp, yielding %llu syncs with %llu extra syncmers\n",
-	      nSeq-nSeq0, totSeq-totSeq0, totSync-totSync0, kmerHashMax(kh)-syncMax0) ;
+      fprintf (stderr, "had %llu sequences (%lld filtered) %llu bp, yielding %llu syncs with %llu extra syncmers\n",
+	       nSeq-nSeq0, nFilt-nFilt0, totSeq-totSeq0, totSync-totSync0, kmerHashMax(kh)-syncMax0) ;
       timeUpdate (stderr) ;
-      nSeq0 = nSeq ; totSeq0 = totSeq ; totSync0 = totSync ; syncMax0 = kmerHashMax(kh) ;
+      nSeq0 = nSeq ; nFilt0 = nFilt ; totSeq0 = totSeq ; totSync0 = totSync ;
+      syncMax0 = kmerHashMax(kh) ;
       ++argv ;
     } // source file
 
@@ -485,27 +523,29 @@ int main (int argc, char *argv[])
   if (ofPath) oneFileClose (ofPath) ;
   if (seqDir) arrayDestroy (seqDir) ;
 
-  if (newKmers)
-    { if (isHistNewK) // histogram of new kmers
-	{ arraySort (newKmers, kmerOrder) ;
-	  Array hist = arrayCreate (1024, I64) ;
-	  I64 last = 0 ;
-	  for (i = 1 ; i < arrayMax(newKmers) ; ++i)
-	    if (kmerOrder (arrp(newKmers,i,I64), arrp(newKmers,i-1,I64)))
-	      { ++array(hist,i-last,I64) ; last = i ; }
-	  ++array(hist,i-last,I64) ;
-	  qhist(hist,stdout) ;
-	  arrayDestroy (hist) ;
-	  timeUpdate (stderr) ;
-	}
-      arrayDestroy (newKmers) ;
-    }
-
   if (isHistK) // histogram of kmers
     { Array hist = arrayCreate (1024, I64) ;
       for (i = 1 ; i < arrayMax(kh->count) ; ++i) ++array(hist,arr(kh->count,i,I64),I64) ;
       qhist(hist,stdout) ;
       arrayDestroy (hist) ;
+#ifdef COUNT_POLY_G
+      I64 *cgCount = new0 (kh->len, I64) ;
+      int nBytes = (kh->len+3) / 4 ;
+      int byteCountC[256], byteCountG[256] ;
+      for (i = 0 ; i < 256 ; ++i)
+	{ byteCountC[i] = ((i&3) == 1) + ((i&12) == 4) + ((i&48) == 16) + ((i&192) == 64) ;
+	  byteCountG[i] = ((i&3) == 2) + ((i&12) == 8) + ((i&48) == 32) + ((i&192) == 128) ;
+	}
+      for (i = 1 ; i <= kh->max ; ++i)
+	{ I64 nC = 0, nG = 0 ;
+	  U8 *x ;
+	  for (j = 0, x = (U8*)(kh->pack + i*kh->plen) ; j < nBytes ; ++j, ++x)
+	    { nC += byteCountC[(int)*x] ; nG += byteCountG[(int)*x] ; }
+	  if (nC > nG) ++cgCount[nC] ; else ++cgCount[nG] ;
+	}
+      for (i = 0 ; i < kh->len ; ++i)	printf ("CG %2lld %lld\n", i, cgCount[i]) ;
+      newFree (cgCount, kh->len, I64) ;
+#endif // COUNT_POLY_G
       timeUpdate (stderr) ;
     }
 
@@ -516,6 +556,13 @@ int main (int argc, char *argv[])
       kmerHashWriteOneFile (kh, ofSync) ;
       fprintf (stderr, "wrote %llu syncmers to file %s\n", kmerHashMax(kh), oneFileName(ofSync)) ;
       oneFileClose (ofSync) ;
+      timeUpdate (stderr) ;
+    }
+  if (ofNewK) // write the new kmerhash
+    { writeParams (ofNewK, &params) ;
+      kmerHashWriteOneFile (khNew, ofNewK) ;
+      fprintf (stderr, "wrote %llu syncmers to file %s\n", kmerHashMax(khNew), oneFileName(ofNewK)) ;
+      oneFileClose (ofNewK) ;
       timeUpdate (stderr) ;
     }
   if (syncFaOut)
