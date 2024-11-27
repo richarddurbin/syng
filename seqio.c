@@ -5,7 +5,7 @@
  * Description: buffered package to read arbitrary sequence files - much faster than readseq
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 16 11:31 2024 (rd109)
+ * Last edited: Nov 23 19:16 2024 (rd109)
  * * Dec 15 09:45 2022 (rd109): separated out 2bit packing/unpacking into SeqPack
  * Created: Fri Nov  9 00:21:21 2018 (rd109)
  *-------------------------------------------------------------------
@@ -173,7 +173,7 @@ void seqIOclose (SeqIO *si)
 #endif
 #ifdef BAMIO
   if (si->type == BAM)
-    bamFileClose (si->handle) ;
+    bamFileClose (si) ;
 #endif
   free (si) ;
 }
