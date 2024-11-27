@@ -7,7 +7,7 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Nov 13 23:28 2024 (rd109)
+ * Last edited: Nov 19 22:48 2024 (rd109)
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
  * * Mar 11 02:49 2024 (rd109): fixed group bug found by Gene
@@ -890,6 +890,17 @@ static char *compactIntList (OneFile *vf, OneInfo *li, I64 len, char *buf, int *
 { char *y;
   int   d, k;
   I64   z, i, mask, *ibuf;
+  
+  if (buf != li->buffer && !li->isUserBuf) // copy into li->buffer so can corrupt it
+    { if ((I64) (li->bufSize) < len)
+	{ if (li->buffer != NULL)
+	    free (li->buffer);
+	  li->bufSize = len + 1;
+	  li->buffer = new (li->bufSize * sizeof(I64), void);
+	}
+      memcpy (li->buffer, buf, len*sizeof(I64)) ;
+      buf = li->buffer ;
+    }
 
   ibuf = (I64 *) buf;
 
@@ -914,13 +925,6 @@ static char *compactIntList (OneFile *vf, OneInfo *li, I64 len, char *buf, int *
 
   z = k - d;   // number of 0 bytes
   if (z == 0) return (char*)&ibuf[1] ;
-  
-  if (buf != li->buffer && !li->isUserBuf && (I64) (li->bufSize*sizeof(I64)) < d*len)
-    { if (li->buffer != NULL)
-        free (li->buffer);
-      li->bufSize = ((d*len) / sizeof(I64)) + 1;
-      li->buffer = new (li->bufSize * sizeof(I64), void);
-    }
 
   y = li->buffer ;
   buf += sizeof(I64) ; --len ; // don't record the first element of buf, which is not a diff
@@ -3386,7 +3390,7 @@ OneCodec *vcDeserialize(void *in)
  ********************************************************************************************/
 
 static uint8 Number[128] =
-    { 0, 0, 0, 0, 0, 0, 0, 0,
+    { 0, 1, 2, 3, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 0,
