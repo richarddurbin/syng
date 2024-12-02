@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 26 00:07 2024 (rd109)
+ * Last edited: Dec  1 11:17 2024 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -211,14 +211,15 @@ static char usage[] =
   "  -k <smer length>       : [16] must be under 32\n"
   "  -seed <seed>           : [7] for the hashing function\n"
   "  -T <threads>           : [8] number of threads\n"
+  "  -o <outfile prefix>    : [syngOut] applies to all following write* options\n"
   "  -readK <.1khash file>  : read and start from this syncmer (khash) file\n"
   "  -zeroK                 : zero the kmer counts\n"
-  "  -noNewK                : do not create new syncmers - convert unmatched syncmers to 0\n"
-  "  -o <outfile prefix>    : [syngOut] applies to all write* options\n"
+  "  -limitK <min> <max>    : filter current kmer set based on counts ; max 0 to have no upper bound\n"
   "  -histK                 : output quadratic histogram of kmer counts (after sequence processsing)\n"
   "  -writeK                : write the syncmers as a .1khash file\n"
   "  -writeKfa              : write the syncmers as a fasta file, with ending .kmer.fa.gz\n"
   "  -writeNewK <file prefix> : write new syncmers as a .1khash file; implies -N\n"
+  "  -noNewK                : do not create new syncmers - convert unmatched syncmers to 0\n"
   "  -writePath             : write a .1path file (paths of nodes)\n"
   "  -writeGBWT             : write a .1gbwt file (nodes, edges and paths in GBWT form)\n"
   "  -writeEnds             : write the non-syncmer ends of sequences to 1path or 1gbwt files\n"
@@ -243,7 +244,6 @@ int main (int argc, char *argv[])
   int         nThread = 8 ;
   pthread_t  *threads ;
   ThreadInfo *threadInfo ;
-  SeqIO      *sio = 0 ;
   KmerHash   *kh = 0, *khNew = 0 ;
   OneSchema  *schema = oneSchemaCreateFromText (syngSchemaText) ;
   OneFile    *ofSync = 0, *ofGBWT = 0, *ofPath = 0, *ofSeq = 0, *ofNewK ;
@@ -288,6 +288,19 @@ int main (int argc, char *argv[])
       { if (!kh) die ("-zeroK error: no khash file read in yet") ;
 	memset (arrp(kh->count,0,I64), 0, arrayMax(kh->count)*sizeof(I64)) ;
 	argc-- ; argv++ ; 
+      }
+    else if (!strcmp (*argv, "-limitK") && argc > 2)
+      { if (!kh) die ("-limitK error: no khash file read in yet") ;
+	int min = atoi (argv[1]), max = atoi(argv[2]) ;
+	I64 n = 0, *c = arrp(kh->count,1,I64) ;
+	for (i = 1 ; i <= kh->max ; ++i, ++c) if (*c >= min && (*c <= max || !max)) ++n ;
+	KmerHash *kh2 = kmerHashCreate (n*4, kh->len) ;
+	c = arrp(kh->count,1,I64) ;
+	for (i = 1 ; i <= kh->max ; ++i, ++c)
+	  if (*c >= min && (*c <= max || !max)) kmerHashAddPacked (kh2, kh->pack + i*kh->plen, 0) ;
+	kmerHashDestroy (kh) ;
+	kh = kh2 ;
+	argc -= 3 ; argv += 3 ;
       }
     else if (!strcmp (*argv, "-histK")) { isHistK = true ; argc-- ; argv++ ; }
     else if (!strcmp (*argv, "-noNewK"))   { isAddSyncmers = false ; argc-- ; argv++ ; }
@@ -382,15 +395,24 @@ int main (int argc, char *argv[])
   int nSource = 0 ;
   while (argc--)
     { ++nSource ;
-      
-      if (!(sio = seqIOopenRead (*argv, dna2indexConv, (filterQ > 0))))
-	die ("failed to open read sequence file %s", *argv) ;
-      if (filterQ > 0 && !sio->isQual)
-	die ("file %s has no qualities, but filterPolyG is set", *argv) ;
-      fprintf (stderr, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
+      OneFile *ofIn = oneFileOpenRead (*argv, schema, 0, nThread) ;
+      SeqIO   *sio = 0 ;
+      if (ofIn && oneGoto (ofIn, 'P', 1)) // a path file - check we have syncmers
+	{ if (!kh->max) die ("%s is a path file but we have no kmers", *argv) ;
+	  fprintf (stderr, "path file %d %s: ", nSource, *argv) ;
+	}
+      else
+	{ ofIn = 0 ;
+	  sio = seqIOopenRead (*argv, dna2indexConv, (filterQ > 0)) ;
+	  fprintf (stderr, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
+	}
+      if (!ofIn && !sio)
+	die ("failed to open sequence or path file %s", *argv) ;
+      if (filterQ > 0 && (!sio || !sio->isQual))
+	die ("\nfile %s has no qualities, but filterPolyG is set", *argv) ;
       fflush (stderr) ;
       bool isDone = false ;
-      while (!isDone) 
+      while (!isDone)
 	{ for (i = 0 ; i < nThread ; ++i)  // read 100Mb DNA per thread and find nodes in parallel
 	    { ThreadInfo *ti = &threadInfo[i] ;
 	      arrayMax(ti->seq) = 0 ;
