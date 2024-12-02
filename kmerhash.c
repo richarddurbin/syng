@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 27 16:47 2024 (rd109)
+ * Last edited: Dec  2 18:26 2024 (rd109)
  * Created: Tue Sep  3 19:38:07 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -27,7 +27,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->table = new0(size, I64) ;
   kh->mask = size - 1 ;
   kh->plen = (len+31) >> 5 ;
-  kh->psize = size * 0.35 ;
+  kh->psize = size * 0.3 ;
   kh->pack = new0(kh->plen*kh->psize, U64) ;
   kh->seqbuf = new0(len+1,char) ;
   kh->seqPack = seqPackCreate ('a') ; // 'a' means unpack into acgt
