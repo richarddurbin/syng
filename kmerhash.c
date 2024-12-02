@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 16 11:30 2024 (rd109)
+ * Last edited: Nov 27 16:47 2024 (rd109)
  * Created: Tue Sep  3 19:38:07 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -27,7 +27,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->table = new0(size, I64) ;
   kh->mask = size - 1 ;
   kh->plen = (len+31) >> 5 ;
-  kh->psize = size * 0.3 ;
+  kh->psize = size * 0.35 ;
   kh->pack = new0(kh->plen*kh->psize, U64) ;
   kh->seqbuf = new0(len+1,char) ;
   kh->seqPack = seqPackCreate ('a') ; // 'a' means unpack into acgt
@@ -121,10 +121,32 @@ bool kmerHashFindThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *u)
   return find (kh, u,  index, isRC, &loc, false) ;
 }
 
-bool kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index)
+bool kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and correctly oriented
 {
   U64 loc ;
   return find (kh, u, index, false, &loc, true) ;
+}
+
+static void doubleTable (KmerHash *kh)
+{
+  ++kh->dim ;
+  I64 *newTable = new0 (1 << kh->dim, I64) ;
+  kh->mask = (1 << kh->dim) - 1 ;
+  U64  i ;
+  for (i = 1 ; i <= kh->max ; ++i) // remap all the packed sequences into newTable
+    { U64 loc = *packseq(kh,i) & kh->mask ;
+      U64 delta = 0 ;
+      while (newTable[loc])
+	{ if (!delta) delta = hashDelta(packseq(kh,i), kh->plen, kh->dim) ;
+	  loc = (loc + delta) & kh->mask ;
+	}
+      newTable[loc] = i ;
+    }
+  newFree (kh->table, (U64)1 << (kh->dim-1), I64) ;
+  kh->table = newTable ;
+  kh->pack = newResize (kh->pack, kh->plen*kh->psize, 2*kh->plen*kh->psize, U64) ;
+  kh->psize *= 2 ;
+  // printf ("doubled at max = %llu to %llu\n", kh->max, kh->psize) ;
 }
 
 bool kmerHashAdd (KmerHash *kh, char *dna, I64 *index)
@@ -141,26 +163,24 @@ bool kmerHashAdd (KmerHash *kh, char *dna, I64 *index)
   array(kh->count, kh->max, I64) = 1 ;
   if (index) *index = isRC ? -kh->max : kh->max ;
   
-  if (kh->max == kh->psize-1)  // need to double
-    { ++kh->dim ;
-      I64 *newTable = new0 (1 << kh->dim, I64) ;
-      kh->mask = (1 << kh->dim) - 1 ;
-      U64  i ;
-      for (i = 1 ; i <= kh->max ; ++i) // remap all the packed sequences into newTable
-	{ U64 loc = *packseq(kh,i) & kh->mask ;
-	  U64 delta = 0 ;
-	  while (newTable[loc])
-	    { if (!delta) delta = hashDelta(packseq(kh,i), kh->plen, kh->dim) ;
-	      loc = (loc + delta) & kh->mask ;
-	    }
-	  newTable[loc] = i ;
-	}
-      newFree (kh->table, (U64)1 << (kh->dim-1), I64) ;
-      kh->table = newTable ;
-      kh->pack = newResize (kh->pack, kh->plen*kh->psize, 2*kh->plen*kh->psize, U64) ;
-      kh->psize *= 2 ;
-      // printf ("doubled at max = %llu to %llu\n", kh->max, kh->psize) ;
-    }
+  if (kh->max == kh->psize-1) doubleTable (kh) ;
+
+  // printf ("add: loc %llx index %lld max %lld\n", loc, *index, kh->max) ;
+  return true ;
+}
+
+bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and correctly oriented
+{
+  U64 newLoc ;
+  bool isFound = find (kh, u, index, false, &newLoc, true) ;
+  if (isFound) return false ;
+
+  memcpy (packseq(kh,++kh->max), u, kh->plen*sizeof(I64)) ; // have to copy it
+  kh->table[newLoc] = kh->max ; // add the new location
+  array(kh->count, kh->max, I64) = 1 ;
+  if (index) *index = kh->max ;
+  
+  if (kh->max == kh->psize-1) doubleTable (kh) ;
 
   // printf ("add: loc %llx index %lld max %lld\n", loc, *index, kh->max) ;
   return true ;
