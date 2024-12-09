@@ -7,7 +7,7 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Dec  1 11:28 2024 (rd109)
+ * Last edited: Dec  2 15:02 2024 (rd109)
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
  * * Mar 11 02:49 2024 (rd109): fixed group bug found by Gene
@@ -1658,6 +1658,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
       if (strcmp (path, "-") == 0) die ("ONE error: parallel input incompatible with stdin as input");
 
       for (i = 1 ; i < nthreads ; ++i) files[i] = fopen (path, "r") ;
+      vf->share = nthreads ;
       vf = readThreadMake (vf, vs0, files) ;
       free (files) ;
     }
@@ -1905,6 +1906,7 @@ OneFile *oneFileOpenWriteNew (const char *path, OneSchema *vs, const char *fileT
 	}
     }
 
+  free (tempPath) ;
   return vf;
 }
 
