@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Dec  8 16:05 2024 (rd109)
+ * Last edited: Dec  9 20:37 2024 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -513,30 +513,31 @@ int main (int argc, char *argv[])
 		    oneWriteLine (ofOut, 'P', 0, 0) ;
 		    if (isWriteEnds) // and its ends if they were requested
 		      { oneWriteLine (ofOut, 'X', posList[0], seq) ;
-			oneWriteLine (ofOut, 'Y',
-				      arr(ti->seqLen,j,I64) - posList[posLen-1] - kh->len,
-				      seq+posList[posLen-1]) ;
+			if (posLen)
+			  oneWriteLine (ofOut, 'Y',
+					arr(ti->seqLen,j,I64) - posList[posLen-1] - kh->len,
+					seq+posList[posLen-1]) ;
 		      }
-		    if (outType == GBWT) // add paths to the GBWT and write the starting information
+		    if (posLen && outType == GBWT) // add paths to the GBWT and write the start nodes
 		      { SyngBWTpath *sbp = syngBWTpathStart (gbwtOut, syncList[0]) ;
 			oneInt(ofOut, 0) = syncList[0] ;
 			oneInt(ofOut, 1) = sbp->startCount ;
 			oneInt(ofOut, 2) = posLen ;
 			oneWriteLine (ofOut, 'Z', 0, 0) ;
-			for (j = 1 ; j < posLen ; ++j)
-			  syngBWTpathAdd (sbp, syncList[j], posList[j] - posList[j-1]) ;
+			for (k = 1 ; k < posLen ; ++k)
+			  syngBWTpathAdd (sbp, syncList[k], posList[k] - posList[k-1]) ;
 			syngBWTpathFinish (sbp) ;
 			// now add the reverse path
 			sbp = syngBWTpathStart (gbwtOut, -syncList[posLen-1]) ;
-			for (j = posLen-2 ; j >= 0 ; --j)
-			  syngBWTpathAdd (sbp, -syncList[j], posList[j+1] - posList[j]) ;
+			for (k = posLen-2 ; k >= 0 ; --k)
+			  syngBWTpathAdd (sbp, -syncList[k], posList[k+1] - posList[k]) ;
 			syngBWTpathFinish (sbp) ;
 		      }
-		    else if (outType == PATH) // second because it can corrupt syncList[]
+		    else if (posLen && outType == PATH) // second because it can corrupt syncList[]
 		      { // test if worth flipping sites
 			bool isFlip = false ;
 			I64 *sync = syncList, sync0 = *sync++ ;
-			for (j = 1 ; j < posLen ; ++j, ++sync)
+			for (k = 1 ; k < posLen ; ++k, ++sync)
 			  if (*sync > sync0-64 && *sync < sync0+64) sync0 = *sync ;
 			  else if (-*sync > sync0-64 && -*sync < sync0+64)
 			    { isFlip = true ; sync0 = -*sync ; }
@@ -545,12 +546,12 @@ int main (int argc, char *argv[])
 			if (isFlip)
 			  { arrayMax(seqDir) = 0 ;
 			    array(seqDir,posLen,char) = 0 ;
-			    for (j = 0 ; j < posLen ; ++j)
-			      if (syncList[j] >= 0)
-				arr(seqDir,j,char) = '+' ;
+			    for (k = 0 ; k < posLen ; ++k)
+			      if (syncList[k] >= 0)
+				arr(seqDir,k,char) = '+' ;
 			      else
-				{ arr(seqDir,j,char) = '-' ;
-				  syncList[j] = -syncList[j] ;
+				{ arr(seqDir,k,char) = '-' ;
+				  syncList[k] = -syncList[k] ;
 				}
 			  }
 			oneWriteLine (ofOut, 'z', posLen, syncList) ;
