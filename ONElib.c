@@ -7,7 +7,7 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Dec  2 15:02 2024 (rd109)
+ * Last edited: Dec 10 00:04 2024 (rd109)
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
  * * Mar 11 02:49 2024 (rd109): fixed group bug found by Gene
@@ -2932,7 +2932,7 @@ OneCodec *vcCreate()
 { _OneCodec *v;
   int i;
 
-  v = (_OneCodec *) malloc(sizeof(_OneCodec));
+  v = (_OneCodec *) calloc(1, sizeof(_OneCodec)); // need calloc not malloc for valgrind happiness
   if (v == NULL) die ("vcCreate: Could not allocate compressor") ;
 
   v->state = EMPTY;
