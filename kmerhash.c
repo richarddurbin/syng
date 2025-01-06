@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Dec  2 18:26 2024 (rd109)
+ * Last edited: Jan  5 12:30 2025 (rd109)
  * Created: Tue Sep  3 19:38:07 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -186,12 +186,15 @@ bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and c
   return true ;
 }
 
-char* kmerHashSeq (KmerHash *kh, I64 i)
+char* kmerHashSeq (KmerHash *kh, I64 i, char *buf) // user must provide buf to be threadsafe
 {
+  bool isRC = false ;
+  if (!buf) buf = kh->seqbuf ;
   if (!i) die ("kmerHashSeq() illegally received i = 0") ;
-  if (i < 0) i = -i ;
+  if (i < 0) { i = -i ; isRC = true ; }
   if (i > kh->max) die ("out of range in kmerHashSeq: %lld > %lld", i, kh->max) ;
-  return seqUnpack (kh->seqPack, (U8*)packseq(kh,i), kh->seqbuf, 0, kh->len) ;
+  if (isRC) return seqUnpackRevComp (kh->seqPack, (U8*)packseq(kh,i), buf, 0, kh->len) ;
+  else return seqUnpack (kh->seqPack, (U8*)packseq(kh,i), buf, 0, kh->len) ;
 }
 
 static char *schemaText =
