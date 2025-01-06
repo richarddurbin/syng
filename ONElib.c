@@ -7,7 +7,7 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Dec 10 00:04 2024 (rd109)
+ * Last edited: Jan  4 18:08 2025 (rd109)
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
  * * Mar 11 02:49 2024 (rd109): fixed group bug found by Gene
@@ -1356,6 +1356,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
   OneSchema *vsFile ;                // will be used to build schema from file
   OneSchema *vs0 ;                   // needed when making slave thread entries
   bool       isBareFile = false ;
+  char      *localPath = (char*) path ;
 
   assert (fileType == NULL || strlen(fileType) > 0) ;
 
@@ -1366,21 +1367,25 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
     U8    c ;
 
     if (strcmp (path, "-") == 0)
-      f = stdin;
+      f = stdin ;
     else
       { f = fopen (path, "r");
-	if (f == NULL)
-	  return NULL;
+	if (!f && fileType)
+	  { char *localPath = malloc (strlen(path) + strlen(fileType) + 2) ;
+	    strcpy (localPath, path) ; strcat (localPath, ".") ; strcat (localPath, fileType) ;
+	    f = fopen (localPath, "r") ;
+	  }
+	if (!f) return 0 ;
       }
     
 #define OPEN_ERROR1(x) \
-    { snprintf (errorString, 1024, "ONEcode file open error %s: %s\n", path, x) ; \
-      fclose(f) ; return NULL; }
+    { snprintf (errorString, 1024, "ONEcode file open error %s: %s\n", localPath, x) ; \
+      fclose(f) ; if (localPath != path) free(localPath) ; return NULL; }
 #define OPEN_ERROR3(x,y,z) \
-    { int nChar = snprintf (errorString, 1024, "ONEcode file open error %s: ", path) ; \
+    { int nChar = snprintf (errorString, 1024, "ONEcode file open error %s: ", localPath) ; \
     nChar += snprintf (errorString+nChar, 1024-nChar, x,y,z) ; \
     snprintf (errorString+nChar, 1024-nChar, "\n") ; \
-    fclose(f) ; return NULL ; }
+    fclose(f) ; if (localPath != path) free(localPath) ; return NULL ; }
     
     c = getc(f);
     if (feof(f))
@@ -1422,7 +1427,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
     
     vf->f = f;
     vf->line = curLine;
-    vf->fileName = strdup(path) ;
+    vf->fileName = strdup(localPath) ;
   }
 
   // read header and (optionally) footer
@@ -1451,8 +1456,9 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
       if (isBareFile) // can't have any special header lines
 	{ snprintf (errorString, 1024,
 		   "ONEcode file open error %s: if header exists it must begin with '1' line\n",
-		   path) ;
+		   localPath) ;
 	  oneFileDestroy (vf) ;
+	  if (localPath != path) free(localPath) ; 
 	  return 0 ;
 	}
 
@@ -1623,8 +1629,10 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
   vf->isCheckString = false;   // user can set this back to true if they wish
 
   if (!isBareFile && vsArg && !oneFileCheckSchema (vf, vsArg, false)) // check schema intersection
-    { snprintf (errorString, 1024, "ONEcode file open error %s: schema mismatch to code requirement\n", path) ;
+    { snprintf (errorString, 1024, "ONEcode file open error %s: schema mismatch to code requirement\n",
+		localPath) ;
       oneFileDestroy (vf) ;
+      if (localPath != path) free(localPath) ; 
       return NULL ;
     }
 
@@ -1666,6 +1674,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
   if (!isBareFile)
     oneSchemaDestroy (vs0) ;
     
+  if (localPath != path) free(localPath) ; 
   return vf;
 }
 
