@@ -5,7 +5,7 @@
  * Description: buffered package to read arbitrary sequence files - much faster than readseq
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 23 19:16 2024 (rd109)
+ * Last edited: Jan  6 11:22 2025 (rd109)
  * * Dec 15 09:45 2022 (rd109): separated out 2bit packing/unpacking into SeqPack
  * Created: Fri Nov  9 00:21:21 2018 (rd109)
  *-------------------------------------------------------------------
@@ -694,8 +694,7 @@ U8* seqPackRevComp (SeqPack *sp, char *s, U8 *u, U64 len) /* packs the RC of the
 
 char* seqUnpack (SeqPack *sp, U8 *u, char *s, U64 i, U64 len)
 {
-  if (!s) s = (*sp->unconv >= 'A') ? new(len+1,char) : new(len,char) ;
-  if (*sp->unconv >= 'A') s[len] = 0 ; // 0-terminate if alphabetical
+  if (!s) s = (*sp->unconv >= 'A') ? new0 (len+1,char) : new(len,char) ;
   char *s0 = s ;
   u += (i >> 2) ; i = (i & 3) ; // first offset and go to byte (U8) boundary
   if (i)
@@ -721,9 +720,9 @@ char* seqUnpack (SeqPack *sp, U8 *u, char *s, U64 i, U64 len)
 
 char* seqUnpackRevComp (SeqPack *sp, U8 *u, char *s, U64 i, U64 len)
 {
-  if (!s) s = (*sp->unconv >= 'A') ? new(len+1,char) : new(len,char) ;
-  if (*sp->unconvC >= 'A') s[len] = 0 ; // 0-terminate if alphabetical
-  char *s0 = s+len ;
+  if (!s) s = (*sp->unconv >= 'A') ? new0 (len+1,char) : new(len,char) ;
+  char *s0 = s ;
+  s += len ;
   u += (i >> 2) ; i = (i & 3) ; // first offset and go to byte (U8) boundary
   if (i)
     { U8 uu = *u >> 2*i ;
