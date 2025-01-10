@@ -5,8 +5,8 @@
  * Description: determine locations of syncmers from a <syng>.1khash within a reference (.fa) genome
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  8 15:29 2025 (am3320)
- * Created: Mon Jan  6 14:51  2024 (am3320)
+ * Last edited: Jan 10 16:08 2025 (am3320)
+ * Created: Mon Jan 6 14:51  2025 (am3320)
  *-------------------------------------------------------------------
  */
 
@@ -15,12 +15,17 @@
 #include "seqio.h"
 #include "ONElib.h"
 
-
-/******************* package to handle syncmer parameters *************/
+/******************* handle syncmer parameters, data structures to store reference positions based on syncmer matches *************/
 
 typedef struct {
   int w, k, seed ;
 } Params ;
+
+typedef struct {
+  I32	    sync ;	// initially 0 if not in kh; -ve if if reverse orientation
+  I32       pos ;       // offset in the current sequence
+  bool      forward;    // stores orientation
+} SyncPos ;
 
 static int PARAMS_K_DEFAULT = 8 ;
 static int PARAMS_W_DEFAULT = 55 ;
@@ -100,40 +105,54 @@ int main (int argc, char *argv[])
 
     // process the sequences serially
     I64 totSeq = 0;
-    
+    Array aSync = arrayCreate(1<<20, SyncPos); 
+
     while (seqIOread(sio)) {
 
         I64 seqLen = sio->seqLen;
-        I64 iSync;
-        I64 seqStart = 0 ;
-        int pos = 0;
         I64 sync;
 
         printf("read sequence %s length %" PRIu64 "\n", sqioId(sio), seqLen);
         char *s = sqioSeq(sio);
         printf("sequence: %s\n", s);
+
         char *id = sqioId(sio);
-        totSeq += seqLen;
-        printf("read sequence %s length %" PRIu64 "\n", sqioId(sio), seqLen);
-        
+        totSeq += seqLen; 
+        int pos = 0;
+       
         SeqhashIterator *sit = syncmerIterator (sh, s, seqLen) ;
         while (syncmerNext (sit, 0, &pos, 0)) 
         {
-            printf("found syncmer at position %" PRIu64 "\n", (uint64_t)pos);
-            sync = 0;
+            printf("found syncmer at position %d", pos);
             if (kmerHashFind (kh, s+pos, &sync)) {
-                printf("found hit: %" PRIu64 "\n", sync);
-                if (sync < 0) sync = -sync ;
-                else sync = 0 ;
-            } else {
+                printf("found hit: %lld", sync);
+                bool forward = true;
+                if (sync < 0) {
+                    sync = -sync;
+                    forward = false;
+                    printf("reverse complement\n"); 
+                }
+                SyncPos *sp = arrayp (aSync, sync, SyncPos) ;
+              
+                sp->pos = pos;
+                sp->forward = forward;
+                sp->sync = sync;
+            }
+             else {
                 printf("no hit\n");
             }
         }
         seqhashIteratorDestroy (sit) ;
     }
 
-    // fill out -- write to .1ref file (using ofOut)
+    printf("SyncPos max: %llu\n", arrayMax(aSync));
+    for (U64 i = 0; i < arrayMax(aSync); i++) {
+      SyncPos *sp = arrp(aSync, i, SyncPos);
+      printf("SyncPos %llu: sync=%d, pos=%d, forward=%s\n", i, sp->sync, sp->pos, sp->forward ? "true" : "false");
+    }
 
+
+    // fill out -- write to .1ref file (using ofOut)
     /*
     "P 3 ref                   REFERENCE INFORMATION\n"
     "O N 2 6 STRING 3 INT      name of sequence, e.g. chr1, and its length\n"
@@ -150,8 +169,9 @@ int main (int argc, char *argv[])
     oneWriteLine (ofOut, 'I', kh->max, index) ;
     oneWriteLine (ofOut, 'P', kh->max, position) ;
     */
-    
-    // clean up memory
+
+    // free allocated memory
+    arrayDestroy(aSync); 
     seqIOclose (sio) ;
     oneFileClose (ofOut) ;
     kmerHashDestroy (kh) ;
