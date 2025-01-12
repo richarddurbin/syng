@@ -5,7 +5,7 @@
  * Description: determine locations of syncmers from a <syng>.1khash within a reference (.fa) genome
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 10 16:08 2025 (am3320)
+ * Last edited: Jan 12 01:08 2025 (am3320)
  * Created: Mon Jan 6 14:51  2025 (am3320)
  *-------------------------------------------------------------------
  */
@@ -25,8 +25,7 @@ typedef struct {
 typedef struct {
   I32       pos ;       // position in reference
   I32      occurences;     // # of hits from reference
-  int     chrom;          // chromosome number
-  bool      forward;    // stores orientation
+  int      chrom;          // chromosome number
 } SyncPos ;
 
 
@@ -96,12 +95,6 @@ int main (int argc, char *argv[])
     
     if (kh->len != params.w + params.k)
         die ("syncmer len mismatch %d != %d + %d", kh->len, params.w, params.k) ;
-
-    printf("khash length: %d\n", kh->len);
-    printf("khash dimension: %d\n", kh->dim);
-    printf("khash max: %llu\n", kh->max);
-    printf("khash count: %llu\n", kh->count);
-    printf ("read %llu kmers from %s\n", kh->max, oneFileName (ofK)) ;
     
     oneFileClose (ofK) ;
     timeUpdate (stdout) ;
@@ -117,15 +110,10 @@ int main (int argc, char *argv[])
         I64 seqLen = sio->seqLen;
         I64 sync;
 
-        printf("read sequence %s length %" PRIu64 "\n", sqioId(sio), seqLen);
         char *s = sqioSeq(sio);
-        printf("sequence: %s\n", s);
-        printf("chromosome: %d\n", currentChrom);
         char *id = sqioId(sio);
 
         U64 index;
-        printf("index: %llu\n", index);
-        printf("currentChrom: %d\n", currentChrom);
         dictAdd (nameDict, id, &index) ;
         totSeq += seqLen; 
         int pos = 0;
@@ -133,19 +121,15 @@ int main (int argc, char *argv[])
         SeqhashIterator *sit = syncmerIterator (sh, s, seqLen) ;
         while (syncmerNext (sit, 0, &pos, 0)) 
         {
-            //printf("found syncmer at position %d", pos);
             if (kmerHashFind (kh, s+pos, &sync)) {
-                //printf("found hit: %lld", sync);
                 bool forward = true;
                 if (sync < 0) {
                     sync = -sync;
                     forward = false;
-                    //printf("reverse complement\n"); 
                 }
                 SyncPos *sp = arrayp (aSync, sync, SyncPos) ;
                 sp->pos = pos;
-                sp->forward = forward;
-                sp->chrom = currentChrom;
+                sp->chrom = forward ? currentChrom : -currentChrom;
                 sp->occurences += 1;
             }
         }
@@ -153,7 +137,7 @@ int main (int argc, char *argv[])
         currentChrom += 1;
     }
 
-    for (int j = 1 ; j < dictMax (nameDict) ; ++j)
+    for (int j = 0 ; j < dictMax (nameDict) ; ++j)
     { 
         char *name = dictName(nameDict,j) ;
         oneWriteLine (ofOut, 'N', strlen(name), name) ;
@@ -170,9 +154,9 @@ int main (int argc, char *argv[])
       SyncPos *sp = arrp(aSync, i, SyncPos);
       if (sp->occurences < 1) {
         x[i] = 0; // indicate missing
-        y[i] = -1; // indicate missing
+        y[i] = -1; // indicate missing (negative since 0 is a valid sequence position)
       } else {
-        x[i] = sp->forward ? sp->chrom : -sp->chrom;
+        x[i] = sp->chrom;
         y[i] = sp->pos;
       }
       z[i] = sp->occurences;
