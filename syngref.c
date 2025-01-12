@@ -11,6 +11,7 @@
  */
 
 #include "syng.h"
+#include "dict.h"
 #include "seqhash.h"
 #include "seqio.h"
 #include "ONElib.h"
@@ -22,10 +23,12 @@ typedef struct {
 } Params ;
 
 typedef struct {
-  I32	    sync ;	// initially 0 if not in kh; -ve if if reverse orientation
-  I32       pos ;       // offset in the current sequence
+  I32       pos ;       // position in reference
+  I32      occurences;     // # of hits from reference
+  int     chrom;          // chromosome number
   bool      forward;    // stores orientation
 } SyncPos ;
+
 
 static int PARAMS_K_DEFAULT = 8 ;
 static int PARAMS_W_DEFAULT = 55 ;
@@ -105,7 +108,9 @@ int main (int argc, char *argv[])
 
     // process the sequences serially
     I64 totSeq = 0;
+    int currentChrom = 1;
     Array aSync = arrayCreate(1<<20, SyncPos); 
+    DICT *nameDict = dictCreate(1<<12); // 4096 chromosomes should be a decent bound estimate
 
     while (seqIOread(sio)) {
 
@@ -115,63 +120,75 @@ int main (int argc, char *argv[])
         printf("read sequence %s length %" PRIu64 "\n", sqioId(sio), seqLen);
         char *s = sqioSeq(sio);
         printf("sequence: %s\n", s);
-
+        printf("chromosome: %d\n", currentChrom);
         char *id = sqioId(sio);
+
+        U64 index;
+        printf("index: %llu\n", index);
+        printf("currentChrom: %d\n", currentChrom);
+        dictAdd (nameDict, id, &index) ;
         totSeq += seqLen; 
         int pos = 0;
        
         SeqhashIterator *sit = syncmerIterator (sh, s, seqLen) ;
         while (syncmerNext (sit, 0, &pos, 0)) 
         {
-            printf("found syncmer at position %d", pos);
+            //printf("found syncmer at position %d", pos);
             if (kmerHashFind (kh, s+pos, &sync)) {
-                printf("found hit: %lld", sync);
+                //printf("found hit: %lld", sync);
                 bool forward = true;
                 if (sync < 0) {
                     sync = -sync;
                     forward = false;
-                    printf("reverse complement\n"); 
+                    //printf("reverse complement\n"); 
                 }
                 SyncPos *sp = arrayp (aSync, sync, SyncPos) ;
-              
                 sp->pos = pos;
                 sp->forward = forward;
-                sp->sync = sync;
-            }
-             else {
-                printf("no hit\n");
+                sp->chrom = currentChrom;
+                sp->occurences += 1;
             }
         }
         seqhashIteratorDestroy (sit) ;
+        currentChrom += 1;
     }
 
-    printf("SyncPos max: %llu\n", arrayMax(aSync));
-    for (U64 i = 0; i < arrayMax(aSync); i++) {
-      SyncPos *sp = arrp(aSync, i, SyncPos);
-      printf("SyncPos %llu: sync=%d, pos=%d, forward=%s\n", i, sp->sync, sp->pos, sp->forward ? "true" : "false");
-    }
-
-
-    // fill out -- write to .1ref file (using ofOut)
-    /*
-    "P 3 ref                   REFERENCE INFORMATION\n"
-    "O N 2 6 STRING 3 INT      name of sequence, e.g. chr1, and its length\n"
-    "O I 1 8 INT_LIST          list of indexes into name table for each sync: 0 if missing, -ve if RC\n"
-    "O P 1 8 INT_LIST          positions in sequence\n"
-
-    for (j = 1 ; j < dictMax (nameDict) ; ++i)
+    for (int j = 1 ; j < dictMax (nameDict) ; ++j)
     { 
-        oneInt(of,1) = arr(chrSize,j,I64) ;
         char *name = dictName(nameDict,j) ;
         oneWriteLine (ofOut, 'N', strlen(name), name) ;
     }
+    
+    U64 nSync = arrayMax(aSync);
+    printf("nSync: %llu\n", nSync);
 
-    oneWriteLine (ofOut, 'I', kh->max, index) ;
-    oneWriteLine (ofOut, 'P', kh->max, position) ;
-    */
+    I64 *x = new (nSync, I64);
+    I64 *y = new (nSync, I64);
+    I64 *z = new (nSync, I64);
 
+    for (U64 i = 0; i < nSync; i++) {
+      SyncPos *sp = arrp(aSync, i, SyncPos);
+      if (sp->occurences < 1) {
+        x[i] = 0; // indicate missing
+        y[i] = -1; // indicate missing
+      } else {
+        x[i] = sp->forward ? sp->chrom : -sp->chrom;
+        y[i] = sp->pos;
+      }
+      z[i] = sp->occurences;
+    }
+
+    oneWriteLine (ofOut, 'I', nSync, x);
+    oneWriteLine (ofOut, 'P', nSync, y);
+    oneWriteLine (ofOut, 'O', nSync, z);
+
+    newFree (x, nSync, I64);
+    newFree (y, nSync, I64);
+    newFree (z, nSync, I64);
+    
     // free allocated memory
     arrayDestroy(aSync); 
+    dictDestroy(nameDict);
     seqIOclose (sio) ;
     oneFileClose (ofOut) ;
     kmerHashDestroy (kh) ;

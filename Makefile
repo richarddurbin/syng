@@ -5,8 +5,7 @@ CFLAGS = -O3
 
 ALL = syng ONEview syngmap syngref
 
-#DESTDIR = ~/bin
-DESTDIR = /Users/am86/Documents/DurbinRotation/Code/syng_environment/
+DESTDIR = ~/bin
 
 all: $(ALL)
 
