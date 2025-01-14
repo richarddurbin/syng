@@ -5,7 +5,7 @@
  * Description: maps sequences to a <syng>.1gbwt with its <syng>.1khash
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  6 11:47 2025 (rd109)
+ * Last edited: Jan 14 09:28 2025 (rd109)
  * Created: Mon Dec  2 16:18:27 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -144,7 +144,7 @@ int main (int argc, char *argv[])
   if (!ofK) die ("failed to open .1khash file %s", argv[0]) ;
   OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", 1) ;
   if (!ofGBWT) die ("failed to open .1gbwt file %s", argv[1]) ;
-  SeqIO   *sio = seqIOopenRead (argv[2], dna2indexConv, false) ;
+  SeqIO   *sio = seqIOopenRead (argv[2], dna2index4Conv, false) ;
   if (!sio) die ("failed to open sequence file %s", argv[2]) ;
 
   // this will be our output file
