@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  5 20:18 2025 (rd109)
+ * Last edited: Jan 13 18:49 2025 (rd109)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -17,8 +17,8 @@
 
 typedef struct {
   I32 in, out ;           // syncs
-  I32 inCount, outCount ; // inCount is number of paths entering in +ve direction, outCount in -ve
-  U8  inOff, outOff ;     // sync offsets
+  I32 inCount, outCount ; // number of paths entering from in (+ve dirn), outCount from out (-ve dirn)
+  I32 inOff, outOff ;     // sync offsets
 } SimpleNode ;
 
 typedef struct {
@@ -29,21 +29,23 @@ typedef struct {
 typedef struct {
   I32        inN, outN ;   // how many distinct syncs coming in, going out
   I32        inG, outG ;   // how big are the run-length encoded GBWTs
-  I32        packOff ;     // offset in packed to find the sync offsets
-  SyncCount *sc ;          // inList, then outList, then inGBWT, then outGBWT
-  U8        *packed ;      // original packed version to replace this by if not edited
-} UnpackedNode ;
+  SyncCount *sc ;          // inList, then outList, inGBWT, then outGBWT, then inOff, then outOff
+} ComplexNode ;
+
+typedef struct {
+  I64        size ;
+  U8        *data ;
+} PackedNode ;
 
 typedef union {
-  SimpleNode   *simple ;
-  UnpackedNode *unpacked ;
-  U8           *packed ;
+  SimpleNode   simple ;
+  ComplexNode  complex ;
+  PackedNode   packed ;
 } Node ;
 
 #define NODE_SIMPLE     0x01
-#define NODE_PACKED     0x02
-#define NODE_UNPACKED   0x04
-#define NODE_EDITED     0x08 // only meaningful if not SIMPLE and not PACKED
+#define NODE_COMPLEX    0x02
+#define NODE_PACKED     0x04 // not used yet, but packing/unpacking code is below
 
 static Node nodeCreate (I32 k, I32 in, I32 out, I32 inOff,I32 outOff) ;
 static I32  nodePack (Node *n, U8 *status) ;   // returns new size in bytes
@@ -67,7 +69,10 @@ SyngBWT *syngBWTcreate (int fixedLen, I64 max)
 
 void syngBWTdestroy (SyngBWT *sb)
 {
-  arrayDestroy (sb->node) ; // should reall destroy the contents
+  int i ;
+  for (i = 1 ; i < arrayMax (sb->status) ; ++i)
+    if (arr(sb->status,i,U8) & NODE_COMPLEX) free (arr(sb->node,i,Node).complex.sc) ;
+  arrayDestroy (sb->node) ;
   arrayDestroy (sb->status) ;
   if (sb->length) arrayDestroy (sb->length) ;
   if (sb->startHash) hashDestroy (sb->startHash) ;
@@ -77,29 +82,25 @@ void syngBWTdestroy (SyngBWT *sb)
 
 /*********************** add - the main function ***********************/
 
-// first a couple of utilities
+// first a utility
 
-static inline void scSplit (UnpackedNode *un, SyncCount **inList, SyncCount **outList,
-			    SyncCount **inGBWT, SyncCount **outGBWT)
+static inline void scSplit (ComplexNode *cn, SyncCount **inList, SyncCount **outList,
+			    SyncCount **inGBWT, SyncCount **outGBWT,
+			    I32 **inOffList, I32 **outOffList)
 {
-  if (!un->sc) return ; // don't do this more than once
+  if (!cn->sc) return ; // don't do this more than once
   SyncCount *t ;
-  // don't need to reallocated *inList, because it takes over un->sc
-  t = new(un->outN+1,SyncCount) ; memcpy(t,*outList,un->outN*sizeof(SyncCount)) ; *outList = t ;
-  t = new(un->inG+2,SyncCount) ;  memcpy(t,*inGBWT,un->inG*sizeof(SyncCount)) ;   *inGBWT = t ;
-  t = new(un->outG+2,SyncCount) ; memcpy(t,*outGBWT,un->outG*sizeof(SyncCount)) ; *outGBWT = t ;
-  un->sc = 0 ;
-  // do this now since we know size
-  newFree (0, un->inN + 2*(un->outN + un->inG + un->outG) + 5, SyncCount) ;
-}
-
-static inline void packSplit (UnpackedNode *un, U8 **inOffList, U8 **outOffList)
-{
-  if (!un->packed) return ; // don't do this more than once
-  U8 *t = new(un->outN+1,U8) ; memcpy(t,*outOffList,un->outN*sizeof(U8)) ; *outOffList = t ;
-  // don't need to reallocated *inOffList, because it takes over un->packed
-  un->packed = 0 ;
-  newFree (0, un->inN + 2*un->outN + 1, char) ; // do this now since we know size
+  // don't need to reallocated *inList, because it takes over cn->sc
+  t = new(cn->outN+1,SyncCount) ; memcpy(t,*outList,cn->outN*sizeof(SyncCount)) ; *outList = t ;
+  t = new(cn->inG+2,SyncCount) ;  memcpy(t,*inGBWT,cn->inG*sizeof(SyncCount)) ;   *inGBWT = t ;
+  t = new(cn->outG+2,SyncCount) ; memcpy(t,*outGBWT,cn->outG*sizeof(SyncCount)) ; *outGBWT = t ;
+  I32 *tt = new (cn->inN+1,I32) ; memcpy(tt, *inOffList,cn->inN*sizeof(I32)) ; *inOffList = tt ;
+  tt = new (cn->outN+1,I32) ; memcpy(tt, *outOffList, cn->outN*sizeof(I32)) ; *outOffList = tt ;
+  cn->sc = 0 ;
+  // do this now, with 0 so it doesn't actually free the memory, since we know size
+  newFree (0, cn->inN + 2*(cn->outN + cn->inG + cn->outG) + 5, SyncCount) ;
+  newFree (0, (cn->inN + cn->outN + 1)/2, SyncCount) ; // offList old space
+  newFree (0, (cn->inN + cn->outN + 3)/2, SyncCount) ; // offList split space
 }
 
 static U32 startCount (SyngBWT *sb, I32 k, bool isAdd)
@@ -122,7 +123,37 @@ static U32 startCount (SyngBWT *sb, I32 k, bool isAdd)
 // this is the core operation to build the GBWT, by inserting path (in, k, out) at k
 // j is the offset in the list of paths from in to k; returns next j
 
-//#define DEBUG_ADD // use for detailed debugging - very verbose!
+// #define DEBUG_ADD // use for detailed debugging - very verbose!
+
+static void nodePrint (Node *n, U8 *s)
+{
+  if (!*s)
+    printf ("\n  empty node\n") ;
+  else if (*s & NODE_SIMPLE)
+    { SimpleNode *sn = &(n->simple) ;
+      printf ("\n  simple node: in %d [%d] (%d) out %d [%d] (%d)\n",
+	      sn->in, sn->inCount, sn->inOff, sn->out, sn->outCount, sn->outOff) ;
+    }
+  else if (*s & NODE_COMPLEX)
+    { int i ;
+      ComplexNode *cn = &(n->complex) ;
+      printf ("\n  complex node: in %d out %d inG %d outG %d", cn->inN,cn->outN,cn->inG,cn->outG) ;
+      SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+      SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+      I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
+      printf ("\n    in:") ;
+      for (i=0; i<cn->inN; ++i) printf(" %d [%d] (%d)", inList[i].sync,inList[i].count,inOffList[i]) ;
+      printf ("\n    out:") ;
+      for (i=0; i<cn->outN; ++i) printf(" %d [%d] (%d)",outList[i].sync,outList[i].count,outOffList[i]) ;
+      printf ("\n    inG:") ;
+      for (i=0; i<cn->inG; ++i)	printf(" %d [%d]", inGBWT[i].sync, inGBWT[i].count) ;
+      printf ("\n    outG:") ;
+      for (i=0; i<cn->outG; ++i) printf(" %d [%d]", outGBWT[i].sync, outGBWT[i].count) ;
+      putchar ('\n') ;
+    }
+  else die ("\n  nodePrint: unrecognisable node type") ;
+  fflush (stdout) ;
+}
 
 static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I32 outOff) 
 {
@@ -139,6 +170,10 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 
   Node *n = arrayp(sb->node, k, Node) ;
   U8   *s = arrayp(sb->status, k, U8) ;
+  //  if (k == 1358)
+  //    { if (!*s) putchar ('\n') ;
+  //      printf ("adding %d %c %d in %d %d out %d %d", k, isPositive?'+':'-', j, in, inOff, out, outOff) ;
+  //    }
   if (!*s)               // make a new simple node
     { assert (j == 0) ;
       *n = nodeCreate (isPositive ? k : -k, in, inOff, out, outOff) ;
@@ -146,10 +181,11 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
       printf ("new simple node - jNext 0\n") ;
 #endif
+      //      if (k == 1358) { printf (" - new simple node") ; nodePrint (n, s) ; }
       return 0 ;
     }
   if (*s & NODE_SIMPLE)    // try to update an old simple node
-    { SimpleNode *sn = n->simple ;
+    { SimpleNode *sn = &(n->simple) ;
       if (in == sn->in && inOff == sn->inOff && out == sn->out && outOff == sn->outOff)
 	{ if (isPositive)
 	    { ++sn->inCount ;
@@ -166,22 +202,26 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD
 	  printf (" jNext %d\n", j) ;
 #endif
+	  // if (k == 1358) { printf (" - update simple node") ; nodePrint (n, s) ; }
 	  return j ;
 	}
-      else                  // expand out to Unpacked then fall through to code below
-	{ UnpackedNode *un = n->unpacked = new(1,UnpackedNode) ;
-	  un->inN = un->outN = 1 ;
-	  un->inG = un->outG = 1 ;
-	  SyncCount *sc = un->sc = new (4, SyncCount) ;
-	  sc->sync = sn->in ; sc->count = sn->inCount ; ++sc ;    // inList
-	  sc->sync = sn->out ; sc->count = sn->outCount ; ++sc ;  // outList
-	  sc->sync = 0 ; sc->count = sn->outCount ; ++sc ;        // inGBWT
-	  sc->sync = 0 ; sc->count = sn->inCount ;                // outGBWT
-	  *s = NODE_UNPACKED | NODE_EDITED ; // it will be edited, and this makes ->packed simpler
-	  un->packed = new(2,U8) ; un->packed[0] = sn->inOff ; un->packed[1] = sn->outOff ;
+      else                  // expand out to Complex then fall through to code below
+	{ SimpleNode sn = n->simple ; // make a copy this time
+	  ComplexNode *cn = &n->complex ;
+	  cn->inN = cn->outN = 1 ;
+	  cn->inG = cn->outG = 1 ;
+	  SyncCount *sc = cn->sc = new (5, SyncCount) ;
+	  sc->sync = sn.in ; sc->count = sn.inCount ; ++sc ;    // inList
+	  sc->sync = sn.out ; sc->count = sn.outCount ; ++sc ;  // outList
+	  sc->sync = 0 ; sc->count = sn.outCount ; ++sc ;        // inGBWT
+	  sc->sync = 0 ; sc->count = sn.inCount ; ++sc ;         // outGBWT
+	  I32* soff = (I32*)sc ; *soff = sn.inOff ; ++soff ;     // inOffList
+	  *soff = sn.outOff ;                                    // outOffList
+	  *s = NODE_COMPLEX ;
 #ifdef DEBUG_ADD  
 	  printf ("unpacking simple node - ") ;
 #endif
+	  // if (k == 1358) { printf (" - unpack simple node") ; nodePrint (n,s) ; }
 	}
     }
   else if (*s & NODE_PACKED)
@@ -191,59 +231,37 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #endif
     }
   
-  // now node must be unpacked
-  UnpackedNode *un = n->unpacked ;
-
-  // first check whether it is in edit status, and if not put it there
-  if (!(*s & NODE_EDITED)) // must change packed to just contain the offsets
-    { U8 *p = un->packed ;
-      U8 *u = p ;
-      I32 oldSize = *(I32*)u ;
-      u += sizeof(I32) ;
-      I32 dummy ;
-      u += intGet (u, &dummy) ;
-      u += intGet (u, &dummy) ;
-      U8 *newPacked = new(un->inN + un->outN, U8) ;
-      memcpy (newPacked, u, un->inN + un->outN) ;
-      un->packed = newPacked ;
-      newFree (p, oldSize, U8) ;
-      *s |= NODE_EDITED ;
-#ifdef DEBUG_ADD  
-      printf ("setting edit mode - ") ;
-#endif
-    }
+  // now node must be complex
+  ComplexNode *cn = &(n->complex) ;
 
   // strategy is to conceptually separate out the SyncCount lists as below
   // update them in place if we can
-  // if we need to extend one or more of them scSplit() will reassign them and set un->sc to 0
-  SyncCount *inList = un->sc, *outList = inList + un->inN ;
-  SyncCount *inGBWT = outList + un->outN, *outGBWT = inGBWT + un->inG ;
-  // similarly for the offset lists, with packSplit() reassigning and setting un->packed to 0
-  U8        *inOffList = un->packed, *outOffList = un->packed + un->inN ;
+  // if we need to extend one or more of them scSplit() will reassign them and set cn->sc to 0
+  SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+  SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+  I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
 
   // next find in within inList, or add to the end of the list if necessary
   int inK = 0, inPre = 0 ; // inK is index of in within inList, and inPre is sum(count) before inK
-  while (inK < un->inN && (inList[inK].sync != in || inOffList[inK] != inOff))
+  while (inK < cn->inN && (inList[inK].sync != in || inOffList[inK] != inOff))
     inPre += inList[inK++].count ;
-  if (inK == un->inN)      // add in to inList
-    { scSplit (un, &inList, &outList, &inGBWT, &outGBWT) ;
-      packSplit (un, &inOffList, &outOffList) ;
+  if (inK == cn->inN)      // add in to inList
+    { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
       inList[inK].sync = in ; inList[inK].count = 0 ; inOffList[inK] = inOff ;
-      ++un->inN ;
+      ++cn->inN ;
 #ifdef DEBUG_ADD  
       printf ("adding %d to inList - ", in) ;
 #endif
     }
-
+  
   // now do the same for out
   int outK = 0, outPre = 0 ;
-  while (outK < un->outN && (outList[outK].sync != out || outOffList[outK] != outOff))
+  while (outK < cn->outN && (outList[outK].sync != out || outOffList[outK] != outOff))
     outPre += outList[outK++].count ;
-  if (outK == un->outN) // add a sync to outList
-    { scSplit (un, &inList, &outList, &inGBWT, &outGBWT) ;
-      packSplit (un, &inOffList, &outOffList) ;
+  if (outK == cn->outN) // add a sync to outList
+    { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
       outList[outK].sync = out ; outList[outK].count = 0 ; outOffList[outK] = outOff ;
-      ++un->outN ;
+      ++cn->outN ;
 #ifdef DEBUG_ADD  
       printf ("adding %d to outList - ", out) ;
 #endif
@@ -263,7 +281,11 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
       if (g->sync == target) jNext += g->count ;
       ++g ;
     }
-  if (g-g0 >= (isPositive ? un->outG : un->inG)) die ("error in addNode") ;
+  if (g-g0 >= (isPositive ? cn->outG : cn->inG))
+    { nodePrint (n, s) ;
+      die ("addNode %c outG %d inG %d g-g0 %d target %d pre %d j %d jNext %d sumCount %d g[-1].count %d",
+	 isPositive?'+':'-',cn->outG,cn->inG,(int)(g-g0), target, pre, j, jNext, sumCount, g[-1].count) ;
+    }
   if (g->sync == target)                                    // within matching block - easy
     { jNext -= sumCount - pre ;
       g->count++ ;
@@ -272,86 +294,85 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #endif
     }
   else if (sumCount + g->count == pre)                      // at the end of this GBWT block
-    { if (++g - g0 < (isPositive?un->outG:un->inG) && g->sync == target) // can increment next block
+    { if (++g - g0 < (isPositive?cn->outG:cn->inG) && g->sync == target) // can increment next block
 	{ g->count++ ;                                      // jNext is already correct
 #ifdef DEBUG_ADD  
 	  printf ("increment %s-block %d - ", isPositive?"out":"in", (int)(g-g0)) ;
 #endif
 	}
       else                                                  // add one row to the GBWT
-	{ scSplit (un, &inList, &outList, &inGBWT, &outGBWT) ;
+	{ scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
 	  if (isPositive)                                   // remember we incremented g!
-	    { int z ; for (z = un->outG ; z > g - g0 ; --z) outGBWT[z] = outGBWT[z-1] ;
+	    { int z ; for (z = cn->outG ; z > g - g0 ; --z) outGBWT[z] = outGBWT[z-1] ;
 	      outGBWT[z].sync = target ; outGBWT[z].count = 1 ; // again jNext is correct
 #ifdef DEBUG_ADD  
 	      printf ("adding out-block %d - ", z) ;
 #endif
-	      ++un->outG ;
+	      ++cn->outG ;
 	    }
 	  else
-	    { int z ; for (z = un->inG ; z > g - g0 ; --z) inGBWT[z] = inGBWT[z-1] ;
+	    { int z ; for (z = cn->inG ; z > g - g0 ; --z) inGBWT[z] = inGBWT[z-1] ;
 	      inGBWT[z].sync = target ; inGBWT[z].count = 1 ;
 #ifdef DEBUG_ADD  
 	      printf ("adding in-block %d - ", z) ;
 #endif
-	      ++un->inG ;
+	      ++cn->inG ;
 	    }
 	}
     }
   else // we are in the middle of a GBWT block - we need to add two rows: new one and reversal
-    { scSplit (un, &inList, &outList, &inGBWT, &outGBWT) ;
+    { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
       if (isPositive)
-	{ int z ; for (z = un->outG+1 ; z > g - g0 + 2 ; --z) outGBWT[z] = outGBWT[z-2] ;
+	{ int z ; for (z = cn->outG+1 ; z > g - g0 + 2 ; --z) outGBWT[z] = outGBWT[z-2] ;
 	  outGBWT[z].sync = outGBWT[z-2].sync ; outGBWT[z].count = sumCount + g->count - pre ; --z ;
 	  outGBWT[z].sync = target ; outGBWT[z].count = 1 ; --z ; // again jNext is correct
 	  outGBWT[z].count -= (sumCount + g->count - pre) ;
 #ifdef DEBUG_ADD  
 	  printf ("adding 2 out-blocks %d,%d - ", z, z+1) ;
 #endif
-	  un->outG += 2 ;
+	  cn->outG += 2 ;
 	}
       else
-	{ int z ; for (z = un->inG+1 ; z > g - g0 + 2 ; --z) inGBWT[z] = inGBWT[z-2] ;
+	{ int z ; for (z = cn->inG+1 ; z > g - g0 + 2 ; --z) inGBWT[z] = inGBWT[z-2] ;
 	  inGBWT[z].sync = inGBWT[z-2].sync ; inGBWT[z].count = sumCount + g->count - pre ; --z ;
 	  inGBWT[z].sync = target ; inGBWT[z].count = 1 ; --z ;
 	  inGBWT[z].count -= (sumCount + g->count - pre) ;
 #ifdef DEBUG_ADD  
 	  printf ("adding 2 in-blocks %d,%d - ", z, z+1) ;
 #endif
-	  un->inG += 2 ;
+	  cn->inG += 2 ;
 	}
     }
 
 #ifdef DEBUG_ADD
   int z ;
-  if (un->inG) { printf ("inG ") ; for (z = 0 ; z < un->inG ; z++) printf ("(%d,%d)", inGBWT[z].sync, inGBWT[z].count) ; }
-  if (un->outG) { printf ("outG ") ; for (z = 0 ; z < un->outG ; z++) printf ("(%d,%d)", outGBWT[z].sync, outGBWT[z].count) ; }
-  for (z = 0 ; z < un->inG ; z++) if (inGBWT[z].count < 0) die ("count < 0") ;
-  for (z = 0 ; z < un->outG ; z++) if (outGBWT[z].count < 0) die ("count < 0") ;
+  if (cn->inG) { printf ("inG ") ; for (z = 0 ; z < cn->inG ; z++) printf ("(%d,%d)", inGBWT[z].sync, inGBWT[z].count) ; }
+  if (cn->outG) { printf ("outG ") ; for (z = 0 ; z < cn->outG ; z++) printf ("(%d,%d)", outGBWT[z].sync, outGBWT[z].count) ; }
+  for (z = 0 ; z < cn->inG ; z++) if (inGBWT[z].count < 0) die ("count < 0") ;
+  for (z = 0 ; z < cn->outG ; z++) if (outGBWT[z].count < 0) die ("count < 0") ;
 #endif
 
   // we are done
-  if (!un->sc) // have to reform it
-    { un->sc = new (un->inN + un->outN + un->inG + un->outG, SyncCount) ;
-      memcpy (un->sc, inList, un->inN*sizeof(SyncCount)) ;
-      memcpy (un->sc + un->inN, outList, un->outN*sizeof(SyncCount)) ;
-      memcpy (un->sc + un->inN + un->outN, inGBWT, un->inG*sizeof(SyncCount)) ;
-      memcpy (un->sc + un->inN + un->outN + un->inG, outGBWT, un->outG*sizeof(SyncCount)) ;
+  if (!cn->sc) // it was split - we have to reform it
+    { cn->sc = new (cn->inN + cn->outN + cn->inG + cn->outG + (cn->inN + cn->outN + 1)/2, SyncCount) ;
+      SyncCount *sc = cn->sc ;
+      memcpy (sc, inList, cn->inN*sizeof(SyncCount)) ;   sc += cn->inN ;
+      memcpy (sc, outList, cn->outN*sizeof(SyncCount)) ; sc += cn->outN ;
+      memcpy (sc, inGBWT, cn->inG*sizeof(SyncCount)) ;   sc += cn->inG ;
+      memcpy (sc, outGBWT, cn->outG*sizeof(SyncCount)) ; sc += cn->outG ;
+      I32 *ic = (I32*)sc ;
+      memcpy (ic, inOffList, cn->inN*sizeof(I32)) ;      ic += cn->inN ;
+      memcpy (ic, outOffList, cn->outN*sizeof(I32)) ;
       // call free() here because we already allowed for removal on creation
       free (inList) ; free (outList) ; free (inGBWT) ; free (outGBWT) ;
-    }
-  if (!un->packed) // have to reform it
-    { un->packed = new (un->inN + un->outN, U8) ;
-      memcpy (un->packed, inOffList, un->inN) ;
-      memcpy (un->packed + un->inN, outOffList, un->outN) ;
-      // call free() here because we already allowed for removal on creation
-      free (inOffList) ; free (outOffList) ;
+      free (inOffList) ; free(outOffList) ;
     }
   
 #ifdef DEBUG_ADD  
   printf (" - jNext %d\n", jNext) ;
 #endif
-    
+  //  if (k == 1358) nodePrint (n, s) ;
+  
   return jNext ;
 }
 
@@ -369,65 +390,64 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
     die ("syngBWTnext: k %d >= arrayMax(sb->node) %lld", k, arrayMax(sb->node)) ;
   Node *n = arrayp(sb->node, k, Node) ;
   U8   *s = arrayp(sb->status, k, U8) ;
-  if (!*s) return 0 ; // we need to have a populated node already
+  if (!*s) { fprintf (stderr, "empty S\n") ; return 0 ; } // we need to have a populated node already
   if (*s & NODE_SIMPLE)
-    { SimpleNode *sn = n->simple ;
+    { SimpleNode *sn = &(n->simple) ;
       if (isPositive && in == sn->in && inOff == sn->inOff && j < sn->inCount)
 	{ *out = sn->out ; *outOff = sn->outOff ; return j ; }
       else if (!isPositive && in == -sn->out && inOff == sn->outOff && j < sn->outCount)
 	{ *out = -sn->in ; *outOff = sn->inOff ; return j ; }
       else
-	{ *out = 0 ; return 0 ; }
+	{ *out = 0 ; fprintf (stderr, "mismatching SIMPLE\n") ; return 0 ; }
     }
   else if (*s & NODE_PACKED)
     nodeUnpack (n, s) ;
   
-  // now node must be unpacked
-  UnpackedNode *un = n->unpacked ;
+  // now node must complex
+  ComplexNode *cn = &(n->complex) ;
 
-  SyncCount *inList = un->sc, *outList = inList + un->inN ;
-  SyncCount *inGBWT = outList + un->outN, *outGBWT = inGBWT + un->inG ;
-  U8 *inOffList = (*s & NODE_EDITED) ? un->packed : un->packed + un->packOff ;
-  U8 *outOffList = inOffList + un->inN ;
+  SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+  SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+  I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
 
   if (isPositive) // find in within inList
     { int k = 0 ; // k is index of in within inList
-      while (k < un->inN && (inList[k].sync != in || inOffList[k] != inOff))
+      while (k < cn->inN && (inList[k].sync != in || inOffList[k] != inOff))
 	j += inList[k++].count ;
-      if (k == un->inN) return 0 ;      // didn't find it
+      if (k == cn->inN) return 0 ;      // didn't find it
 	
       SyncCount *g0 = outGBWT, *g = g0 ;  // start of the GBWT to insert into
-      I32 *counts = new0(un->outN,I32) ;
+      I32 *counts = new0 (cn->outN, I32) ;
       while (g->count < j)                // find GBWT block for j
 	{ j -= g->count ;
 	  counts[g->sync] += g->count ;
 	  ++g ;
 	}
-      if (g-g0 >= un->outG) die ("error in nextNode") ;
+      if (g-g0 >= cn->outG) die ("error in nextNode") ;
       *out = outList[g->sync].sync ;
       *outOff = outOffList[g->sync] ;
       I32 jNext = j + counts[g->sync] ;
-      newFree (counts, un->outN, I32) ;
+      newFree (counts, cn->outN, I32) ;
       return jNext ;
     }
   else
     { int k = 0 ; // k is index of in within outList
-      while (k < un->outN && (outList[k].sync != -in || outOffList[k] != inOff))
+      while (k < cn->outN && (outList[k].sync != -in || outOffList[k] != inOff))
 	j += outList[k++].count ;
-      if (k == un->outN) return 0 ;      // didn't find it
+      if (k == cn->outN) { fprintf (stderr, "can't find in %d in outList\n", in) ; return 0 ; }      // didn't find it
 	
       SyncCount *g0 = inGBWT, *g = g0 ;  // start of the GBWT to insert into
-      I32 *counts = new0(un->inN,I32) ;
+      I32 *counts = new0(cn->inN,I32) ;
       while (g->count < j)                // find GBWT block for j
 	{ j -= g->count ;
 	  counts[g->sync] += g->count ;
 	  ++g ;
 	}
-      if (g-g0 >= un->inG) die ("error in nextNode") ;
+      if (g-g0 >= cn->inG) die ("error in nextNode") ;
       *out = -inList[g->sync].sync ;
       *outOff = inOffList[g->sync] ;
       I32 jNext = j + counts[g->sync] ;
-      newFree (counts, un->outN, I32) ;
+      newFree (counts, cn->outN, I32) ;
       return jNext ;
     }
 }
@@ -497,49 +517,48 @@ void syngBWTwrite (OneFile *of, SyngBWT *sb)
   for (i = 1 ; i < arrayMax(sb->node) ; ++i)
     { Node n = arr(sb->node, i, Node) ;
       U8   s = arr(sb->status, i, U8) ;
-      if (!s) continue ;
       oneInt(of,0) = sb->fixedLen ; oneWriteLine (of, 'V', 0, 0) ;
+      if (!s) continue ; // must come after we have written the node
       if (s & NODE_SIMPLE)
-	{ SimpleNode *sn = n.simple ;
+	{ SimpleNode *sn = &(n.simple) ;
 	  oneInt(of,0) = sn->in ; oneInt(of,1) = sn->inOff ; oneInt(of,2) = sn->inCount ;
 	  oneWriteLine(of, 'E', 0, 0) ; // + edge
-	  oneInt(of,0) = sn->out ; oneInt(of,1) = sn->outOff ; oneInt(of,2) = sn->outCount ;
+	  oneInt(of,0) = -sn->out ; oneInt(of,1) = sn->outOff ; oneInt(of,2) = sn->outCount ;
 	  oneWriteLine(of, 'e', 0, 0) ; // - edge
 	}
       else
 	{ if (s & NODE_PACKED) nodeUnpack (&n, &s) ;
-	  UnpackedNode *un = n.unpacked ;
-	  SyncCount *inList = un->sc, *outList = inList + un->inN ;
-	  SyncCount *inGBWT = outList + un->outN, *outGBWT = inGBWT + un->inG ;
-	  U8        *inOffList = un->packed + ((s & NODE_EDITED) ? 0 : un->packOff) ;
-	  U8        *outOffList = inOffList + un->inN ;
-	  for (j = 0 ; j < un->inN ; ++j) // incoming edges
+	  ComplexNode *cn = &(n.complex) ;
+	  SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+	  SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+	  I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
+	  for (j = 0 ; j < cn->inN ; ++j) // incoming edges
 	    { oneInt(of,0) = inList[j].sync; oneInt(of,1) = inOffList[j] ; 
 	      oneInt(of,2) = inList[j].count ; oneWriteLine(of, 'E', 0, 0) ; // + edge
 	    }
-	  if (un->outG > 1) // outgoing GBWT, which goes from the incoming edges
-	    { if (un->outG > bufSize)
+	  if (cn->outG > 1) // outgoing GBWT, which goes from the incoming edges
+	    { if (cn->outG > bufSize)
 		{ if (bufSize) newFree(buf, bufSize, I64) ;
-		  bufSize = 2*un->outG ; buf = new (bufSize, I64) ;
+		  bufSize = 2*cn->outG ; buf = new (bufSize, I64) ;
 		}
-	      for (j = 0 ; j < un->outG ; ++j) buf[j] = outGBWT[j].sync ;
-	      oneWriteLine (of, 'B', un->outG, buf) ;
-	      for (j = 0 ; j < un->outG ; ++j) buf[j] = outGBWT[j].count ;
-	      oneWriteLine (of, 'C', un->outG, buf) ;
+	      for (j = 0 ; j < cn->outG ; ++j) buf[j] = outGBWT[j].sync ;
+	      oneWriteLine (of, 'B', cn->outG, buf) ;
+	      for (j = 0 ; j < cn->outG ; ++j) buf[j] = outGBWT[j].count ;
+	      oneWriteLine (of, 'C', cn->outG, buf) ;
 	    }
-	  for (j = 0 ; j < un->outN ; ++j) // outgoing edges
-	    { oneInt(of,0) = outList[j].sync; oneInt(of,1) = outOffList[j] ; 
+	  for (j = 0 ; j < cn->outN ; ++j) // outgoing edges
+	    { oneInt(of,0) = -outList[j].sync; oneInt(of,1) = outOffList[j] ; 
 	      oneInt(of,2) = outList[j].count ; oneWriteLine(of, 'e', 0, 0) ; // - edge
 	    }
-	  if (un->inG > 1) // incoming GBWT, which follows from the outgoing edges (in reverse)
-	    { if (un->inG > bufSize)
+	  if (cn->inG > 1) // incoming GBWT, which follows from the outgoing edges (in reverse)
+	    { if (cn->inG > bufSize)
 		{ if (bufSize) newFree(buf, bufSize, I64) ;
-		  bufSize = 2*un->inG ; buf = new (bufSize, I64) ;
+		  bufSize = 2*cn->inG ; buf = new (bufSize, I64) ;
 		}
-	      for (j = 0 ; j < un->inG ; ++j) buf[j] = inGBWT[j].sync ;
-	      oneWriteLine (of, 'b', un->inG, buf) ;
-	      for (j = 0 ; j < un->inG ; ++j) buf[j] = inGBWT[j].count ;
-	      oneWriteLine (of, 'c', un->inG, buf) ;
+	      for (j = 0 ; j < cn->inG ; ++j) buf[j] = inGBWT[j].sync ;
+	      oneWriteLine (of, 'b', cn->inG, buf) ;
+	      for (j = 0 ; j < cn->inG ; ++j) buf[j] = inGBWT[j].count ;
+	      oneWriteLine (of, 'c', cn->inG, buf) ;
 	    }
 	}
     }
@@ -582,7 +601,7 @@ SyngBWT *syngBWTread (OneFile *of)
 	    if (oneInt(of,0) == 0) startCount (sb, i, true) ; // start node
 	    ++inN ; ++eTotal ; break ;
 	  case 'e':
-	    eOut[outN].sync = oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
+	    eOut[outN].sync = -oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
 	    if (oneInt(of,0) == 0) startCount (sb, -i, true) ; // start node
 	    ++outN ; ++eTotal ; break ;
 	  case 'B':
@@ -605,25 +624,25 @@ SyngBWT *syngBWTread (OneFile *of)
 	    die ("unrecognized linetype %c in vertex", of->lineType) ;
 	  }
       // now we have read everything we need to construct the node
-      if (inN == 0 && outN == 0)
-	*s = 0 ; // empty node
-      else if (inN == 1 && outN == 1) // simple node
+      if (inN == 0 && outN == 0)	// empty node
+	*s = 0 ;
+      else if (inN == 1 && outN == 1)	// simple node
 	{ *s = NODE_SIMPLE ;
-	  SimpleNode *sn = n->simple = new0 (1, SimpleNode) ;
+	  SimpleNode *sn = &(n->simple) ;
 	  sn->in = eIn[0].sync ; sn->inOff = inOff[0] ; sn->inCount = eIn[0].count ;
 	  sn->out = eOut[0].sync ; sn->outOff = outOff[0] ; sn->outCount = eOut[0].count ;
 	}
-      else  // make and unpacked node and mark as edited because don't have packed
-	{ *s = NODE_UNPACKED | NODE_EDITED ;
-	  UnpackedNode *un = n->unpacked = new0 (1, UnpackedNode) ;
-	  un->sc = new (inN + outN + inG + outG, SyncCount) ;
-	  memcpy (un->sc, eIn, inN*sizeof(SyncCount)) ; un->inN = inN ;
-	  memcpy (un->sc+inN, eOut, outN*sizeof(SyncCount)) ; un->outN = outN ;
-	  memcpy (un->sc+inN+outN, gIn, inG*sizeof(SyncCount)) ; un->inG = inG ;
-	  memcpy (un->sc+inN+outN+inG, gOut, outG*sizeof(SyncCount)) ; un->outG = outG ;
-	  un->packed = new (inN+outN, U8) ;
-	  memcpy (un->packed, inOff, inN) ;
-	  memcpy (un->packed+inN, outOff, outN) ;
+      else				// complex node
+	{ *s = NODE_COMPLEX ;
+	  ComplexNode *cn = &(n->complex) ;
+	  cn->sc = new (inN + outN + inG + outG + (inN+outN+1)/2, SyncCount) ;
+	  memcpy (cn->sc, eIn, inN*sizeof(SyncCount)) ; cn->inN = inN ;
+	  memcpy (cn->sc+inN, eOut, outN*sizeof(SyncCount)) ; cn->outN = outN ;
+	  memcpy (cn->sc+inN+outN, gIn, inG*sizeof(SyncCount)) ; cn->inG = inG ;
+	  memcpy (cn->sc+inN+outN+inG, gOut, outG*sizeof(SyncCount)) ; cn->outG = outG ;
+	  I32* ip = (I32*)(cn->sc + inN + outN + inG + outG) ;
+	  memcpy (ip, inOff, inN*sizeof(I32)) ; ip += inN ;
+	  memcpy (ip, outOff, outN*sizeof(I32)) ;
 	}
     }
 
@@ -642,10 +661,11 @@ SyngBWT *syngBWTread (OneFile *of)
 static Node nodeCreate (I32 k, I32 in, I32 inOff, I32 out, I32 outOff)
 {
   Node node ;
-  SimpleNode *sn = node.simple = new0 (1, SimpleNode) ;
+  SimpleNode *sn = &(node.simple) ;
   sn->in = in ; sn->inOff = inOff ;
   sn->out = out ; sn->outOff = outOff ;
-  if (k > 0) sn->inCount = 1 ; else sn->outCount = 1 ;
+  if (k > 0) { sn->inCount = 1 ; sn->outCount = 0 ; }
+  else { sn->outCount = 1 ; sn->inCount = 0 ; }
   return node ;
 }
 
@@ -655,87 +675,61 @@ static I32 nodePack (Node *n, U8 *s) // returns new size in bytes
   if (*s & NODE_SIMPLE)
     return sizeof(SimpleNode) ;
   else if (*s & NODE_PACKED)
-    return *(I32*)(n->packed) ;
-  else if (!(*s & NODE_EDITED))
-    { UnpackedNode *un = n->unpacked ;
-      int scG = un->inN + un->outN + un->inG + un->outG ;
-      n->packed = un->packed ;
-      *s &= ~NODE_UNPACKED ;
-      *s |= NODE_PACKED ;
-      newFree (un->sc, scG, SyncCount) ;
-      newFree (un, 5*sizeof(I32) + 2*sizeof(void*), char) ;
-      return *(I32*)(n->packed) ;
-    }
+    return (I32) n->packed.size ;
   else // complex and edited
-    { UnpackedNode *un = n->unpacked ;
-      int scSize = un->inN + un->outN + un->inG + un->outG ;
-      int maxSize = sizeof(I32) + 5*(4 + scSize*2) + un->inN + un->outN ;
+    { ComplexNode *cn = &(n->complex) ;
+      int scSize = cn->inN + cn->outN + cn->inG + cn->outG + (cn->inN + cn->outN + 1)/2 ;
+      int maxSize = sizeof(I32) + 5*(4 + scSize*2) ;
       U8 *u = new(maxSize,U8) ;
       U8 *u0 = u ;
-      u += sizeof(I32) ; // space to record the size of u
-      u += intPut (u, un->inN) ;
-      u += intPut (u, un->outN) ;
-      memcpy (u, un->packed, (size_t) (un->inN + un->outN)) ; // sync offsets
-      u += un->inN + un->outN ;
-      u += intPut (u, un->inG) ;
-      u += intPut (u, un->outG) ;
+      u += intPut (u, cn->inN) ;
+      u += intPut (u, cn->outN) ;
+      u += intPut (u, cn->inG) ;
+      u += intPut (u, cn->outG) ;
       int i ;
-      SyncCount *sc = un->sc ;
+      SyncCount *sc = cn->sc ;
       for (i = 0 ; i < scSize ; ++i, ++sc)
 	{ u += intPut (u, sc->sync) ; u += intPut (u, sc->count) ; }
-      I32 size = u - u0 ;
-      *(I32*)u0 = size ; // store the true size at the start of u
-      n->packed = new(size,U8) ;
-      memcpy(n->packed,u0,(size_t)size) ;
+      newFree (cn->sc, scSize, SyncCount) ;
+      PackedNode *pn = &(n->packed) ;
+      pn->size = u - u0 ;
+      pn->data = new(pn->size,U8) ;
+      memcpy(pn->data,u0,(size_t)pn->size) ;
       newFree (u0, maxSize, U8) ;
-      *s &= ~NODE_UNPACKED ;
+      *s &= ~NODE_COMPLEX ;
       *s |= NODE_PACKED ;
-      newFree (un->sc, scSize, SyncCount) ;
-      newFree (un->packed, un->inN + un->outN, U8) ; // held offsets
-      newFree (un, 5*sizeof(I32) + 2*sizeof(void*), char) ;
-      return *(I32*)(n->packed) ;
+      return pn->size ;
     }
 }
 
-static I32 nodeUnpack (Node *n, U8 *s) // returns new size in bytes
+static I32 nodeUnpack (Node *n, U8 *s) // returns new size in bytes (beyond the node)
 {
   if (!*s) return 0 ;   // nothing in this node
   if (*s & NODE_SIMPLE) // don't do anything
-    return sizeof(SimpleNode) ;
-  else if (*s & NODE_UNPACKED) // also don't do anything - must calculate size
-    { UnpackedNode *un = n->unpacked ;
-      int scSize = un->inN + un->outN + un->inG + un->outG ;
-      I32 size = 5*sizeof(I32) + 2*sizeof(void*) + scSize*sizeof(SyncCount) ;
-      if (*s & NODE_EDITED)
-	size += un->inN + un->outN ;
-      else
-	size += *(I32*)un->packed ;
-      return size ;
+    return 0 ;
+  else if (*s & NODE_COMPLEX) // also don't do anything - must calculate size
+    { ComplexNode *cn = &(n->complex) ;
+      int scSize = cn->inN + cn->outN + cn->inG + cn->outG + (cn->inN + cn->outN + 1) / 2 ;
+      return scSize * sizeof(SyncCount) ;
     }
   else if (*s & NODE_PACKED) // packed
-    { U8 *u0 = n->packed ;
-      U8 *u = u0 ;
-      UnpackedNode *un = new (1, UnpackedNode) ;
-      un->packed = n->packed ;
-      n->unpacked = un ;
+    { I64 packedSize = n->packed.size ;
+      U8 *u = n->packed.data, *u0 = u ;
+      ComplexNode *cn = &(n->complex) ;
       *s &= ~NODE_PACKED ;
-      *s |= NODE_UNPACKED ;
-      *s &= ~NODE_EDITED ;
-      u += sizeof(I32) ; // skip past the initial I32 size
-      u += intGet (u, &un->inN) ;
-      u += intGet (u, &un->outN) ;
-      un->packOff = u - u0 ;
-      u += un->inN + un->outN ; // offsets
-      u += intGet (u, &un->inG) ;
-      u += intGet (u, &un->outG) ;
-      int scSize = un->inN + un->outN + un->inG + un->outG ;
-      SyncCount *sc = un->sc = new (scSize, SyncCount) ;
+      *s |= NODE_COMPLEX ;
+      u += intGet (u, &cn->inN) ;
+      u += intGet (u, &cn->outN) ;
+      u += cn->inN + cn->outN ; // offsets
+      u += intGet (u, &cn->inG) ;
+      u += intGet (u, &cn->outG) ;
+      int scSize = cn->inN + cn->outN + cn->inG + cn->outG + (cn->inN + cn->outN + 1) / 2 ;
+      SyncCount *sc = cn->sc = new (scSize, SyncCount) ;
       int i ;
       for (i = 0 ; i < scSize ; ++i, ++sc)
 	{ u += intGet (u, &sc->sync) ; u += intGet (u, &sc->count) ; }
-      
-      return sizeof(UnpackedNode) +
-	5*sizeof(I32) + 2*sizeof(void*) + scSize*sizeof(SyncCount) + *(I32*)un->packed ;
+      newFree (u0, packedSize, U8) ;
+      return scSize * sizeof(SyncCount) ;
     }
   else
     { die ("something wrong in nodeUnpack") ; return 0 ; } // need return 0 for compiler happiness
