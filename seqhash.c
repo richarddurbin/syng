@@ -7,7 +7,7 @@
 	see test main() at end for standard usage pattern
  * Exported functions: see seqhash.h
  * HISTORY:
- * Last edited: Sep 28 01:20 2024 (rd109)
+ * Last edited: Jan 14 09:28 2025 (rd109)
  * Created: Sat Feb 24 19:20:18 2018 (rd)
  *-------------------------------------------------------------------
  */
@@ -311,8 +311,8 @@ int main (int argc, char *argv[])
   int W = 1023 ;
   SeqIO *sio ;
 
-  if (argc > 1) sio = seqIOopenRead (argv[1], dna2indexConv, 0) ;
-  else sio = seqIOopenRead ("-", dna2indexConv, 0) ;
+  if (argc > 1) sio = seqIOopenRead (argv[1], dna2index4Conv, 0) ;
+  else sio = seqIOopenRead ("-", dna2index4Conv, 0) ;
   
   Seqhash *sh = seqhashCreate (K, W, 7) ;
   while (seqIOread (sio))

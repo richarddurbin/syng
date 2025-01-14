@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  6 11:47 2025 (rd109)
+ * Last edited: Jan 14 09:27 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -120,7 +120,9 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 	    sp->sync = oneInt(ti->ofIn,0) ; sp->pos = oneInt(ti->ofIn,1) ; // starting sync, pos
 	    SyngBWTpath *sbp = syngBWTpathStartOld (ti->sbwt, sp->sync, oneInt(ti->ofIn,2)) ;
 	    for (j = 1 ; j < si->nSync ; ++j)
-	      if (!syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos)) die ("failed GBWT extension") ;
+	      if (!syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos))
+		die ("failed GBWT extension: seq %d (%lld) sync %d from sync %d pos %d",
+		     i, arrayMax(ti->seqInfo)-1, j, sp[j-1].sync, sp[j-1].pos) ;
 	    syngBWTpathDestroy (sbp) ;
 	    break ;
 	  case 'z':
@@ -138,14 +140,14 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 	  case 'X':
 	    if (si->nSync && oneLen(ti->ofIn) != sp->pos) die ("X error in threadProcessPath %d", i) ;
 	    char *dna = oneDNAchar (ti->ofIn) ;
-	    for (j = 0 ; j < oneLen(ti->ofIn) ; ++j) seq[j] = dna2indexConv[dna[j]] ;
+	    for (j = 0 ; j < oneLen(ti->ofIn) ; ++j) seq[j] = dna2index4Conv[dna[j]] ;
 	    break ;
 	  case 'Y':
 	    if (si->nSync && oneLen(ti->ofIn) != si->len - (sp[si->nSync-1].pos + ti->kh->len))
 	      die ("Y error in threadProcessPath %d", i) ;
 	    dna = oneDNAchar (ti->ofIn) ;
 	    int endLen = oneLen(ti->ofIn) ;
-	    for (j = 0 ; j < endLen ; ++j) seq[si->len-endLen+j] = dna2indexConv[dna[j]] ;
+	    for (j = 0 ; j < endLen ; ++j) seq[si->len-endLen+j] = dna2index4Conv[dna[j]] ;
 	    break ;
 	  }
       if (outType == SEQ) // build the sequence from the syncs
@@ -488,7 +490,7 @@ int main (int argc, char *argv[])
 	}
       else
 	{ if (ofIn) { oneFileClose (ofIn) ; ofIn = 0 ; }
-	  sio = seqIOopenRead (*argv, dna2indexConv, 0) ;
+	  sio = seqIOopenRead (*argv, dna2index4Conv, 0) ;
 	  fprintf (stdout, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
 	}
       if (!ofIn && !sio)
@@ -528,6 +530,13 @@ int main (int argc, char *argv[])
 			  { I64 sync ;
 			    kmerHashAdd (kh, seq + sp->pos, &sync) ;
 			    sp->sync = sync ;
+#ifdef ADD_DEBUG
+			    static int N = 10 ;
+			    SeqInfo *si = arrp(ti->seqInfo,j,SeqInfo) ;
+			    fprintf (stderr, "adding seq %lld pos %d (%lld) k %lld (%lld) %s\n",
+				     j, sp->pos, si->len, k, si->nSync, kmerHashSeq (kh,sync,0)) ;
+			    if (!--N) exit(1) ;
+#endif
 			  }
 			else if (khNew)
 			  kmerHashAdd (khNew, seq + sp->pos, 0) ;
