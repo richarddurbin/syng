@@ -63,9 +63,12 @@ int main (int argc, char *argv[])
     timeUpdate (0) ;
 
     if (!argc) { fprintf (stderr, "%s", usage) ; exit (0) ; }
-    char *outPrefix = "syngref" ;
-    int nThread = 1 ;
     printf("arguments: %d %s %s \n", argc, argv[0], argv[1]);
+
+    char *outPrefix = "syngref" ;
+    if (!strcmp (*argv, "-o") && argc > 1) { outPrefix = argv[1] ; argc -= 2 ; argv += 2 ; }
+
+    int nThread = 1 ;
     if (argc != 2) die ("missing the two required arguments\n%s", usage) ;
 
     OneSchema *schema = oneSchemaCreateFromText (syngSchemaText) ;
@@ -92,17 +95,18 @@ int main (int argc, char *argv[])
 
     Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ; // need the +1 here, awkwardly
     KmerHash  *kh = kmerHashReadOneFile (ofK) ;    // read in the kmerhash
-    
+    I64 nSync = kmerHashMax(kh);
+    printf("nSync: %llu\n", nSync);
+
     if (kh->len != params.w + params.k)
         die ("syncmer len mismatch %d != %d + %d", kh->len, params.w, params.k) ;
     
     oneFileClose (ofK) ;
-    timeUpdate (stdout) ;
 
     // process the sequences serially
     I64 totSeq = 0;
     int currentChrom = 1;
-    Array aSync = arrayCreate(1<<20, SyncPos); 
+    Array aSync = arrayCreate(nSync, SyncPos); 
     DICT *nameDict = dictCreate(1<<12); // 4096 chromosomes should be a decent bound estimate
 
     while (seqIOread(sio)) {
@@ -143,9 +147,6 @@ int main (int argc, char *argv[])
         oneWriteLine (ofOut, 'N', strlen(name), name) ;
     }
     
-    U64 nSync = arrayMax(aSync);
-    printf("nSync: %llu\n", nSync);
-
     I64 *x = new (nSync, I64);
     I64 *y = new (nSync, I64);
     I64 *z = new (nSync, I64);
@@ -177,7 +178,6 @@ int main (int argc, char *argv[])
     oneFileClose (ofOut) ;
     kmerHashDestroy (kh) ;
     oneSchemaDestroy (schema) ;				   
-    timeUpdate (stderr) ;
     timeTotal (stderr) ;    
 }
 
