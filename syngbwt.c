@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 13 18:49 2025 (rd109)
+ * Last edited: Jan 14 23:02 2025 (rd109)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -120,6 +120,17 @@ static U32 startCount (SyngBWT *sb, I32 k, bool isAdd)
     }
 }
 
+static void startCountAdd (SyngBWT *sb, I32 k, I32 count)
+{
+  if (!sb->startHash)
+    { sb->startHash = hashCreate (8192) ;
+      sb->startHashCount = arrayCreate (8192, U32) ;
+    }
+  int index ;
+  hashAdd (sb->startHash, HASH_INT(k), &index) ;
+  array(sb->startHashCount, index, U32) += count ;
+}
+
 // this is the core operation to build the GBWT, by inserting path (in, k, out) at k
 // j is the offset in the list of paths from in to k; returns next j
 
@@ -170,10 +181,12 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 
   Node *n = arrayp(sb->node, k, Node) ;
   U8   *s = arrayp(sb->status, k, U8) ;
-  //  if (k == 1358)
-  //    { if (!*s) putchar ('\n') ;
-  //      printf ("adding %d %c %d in %d %d out %d %d", k, isPositive?'+':'-', j, in, inOff, out, outOff) ;
-  //    }
+#ifdef TRACE_NODE  
+  if (k == TRACE_NODE)
+    { if (!*s) putchar ('\n') ;
+      printf ("adding %d %c %d in %d %d out %d %d", k, isPositive?'+':'-', j, in, inOff, out, outOff) ;
+    }
+#endif
   if (!*s)               // make a new simple node
     { assert (j == 0) ;
       *n = nodeCreate (isPositive ? k : -k, in, inOff, out, outOff) ;
@@ -181,7 +194,9 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
       printf ("new simple node - jNext 0\n") ;
 #endif
-      //      if (k == 1358) { printf (" - new simple node") ; nodePrint (n, s) ; }
+#ifdef TRACE_NODE  
+      if (k == TRACE_NODE) { printf (" - new simple node") ; nodePrint (n, s) ; }
+#endif
       return 0 ;
     }
   if (*s & NODE_SIMPLE)    // try to update an old simple node
@@ -202,7 +217,9 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD
 	  printf (" jNext %d\n", j) ;
 #endif
-	  // if (k == 1358) { printf (" - update simple node") ; nodePrint (n, s) ; }
+#ifdef TRACE_NODE
+	  if (k == TRACE_NODE) { printf (" - update simple node") ; nodePrint (n, s) ; }
+#endif
 	  return j ;
 	}
       else                  // expand out to Complex then fall through to code below
@@ -221,7 +238,9 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
 	  printf ("unpacking simple node - ") ;
 #endif
-	  // if (k == 1358) { printf (" - unpack simple node") ; nodePrint (n,s) ; }
+#ifdef TRACE_NODE  
+	  if (k == TRACE_NODE) { printf (" - unpack simple node") ; nodePrint (n,s) ; }
+#endif
 	}
     }
   else if (*s & NODE_PACKED)
@@ -371,8 +390,10 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
   printf (" - jNext %d\n", jNext) ;
 #endif
-  //  if (k == 1358) nodePrint (n, s) ;
-  
+#ifdef TRACE_NODE  
+  if (k == TRACE_NODE) { printf ("  jNext %d", jNext) ; nodePrint (n, s) ; }
+#endif
+
   return jNext ;
 }
 
@@ -390,7 +411,7 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
     die ("syngBWTnext: k %d >= arrayMax(sb->node) %lld", k, arrayMax(sb->node)) ;
   Node *n = arrayp(sb->node, k, Node) ;
   U8   *s = arrayp(sb->status, k, U8) ;
-  if (!*s) { fprintf (stderr, "empty S\n") ; return 0 ; } // we need to have a populated node already
+  if (!*s) die ("syngBWTnext %c %d hit an empty node", isPositive?'+':'-', k) ;
   if (*s & NODE_SIMPLE)
     { SimpleNode *sn = &(n->simple) ;
       if (isPositive && in == sn->in && inOff == sn->inOff && j < sn->inCount)
@@ -398,7 +419,8 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
       else if (!isPositive && in == -sn->out && inOff == sn->outOff && j < sn->outCount)
 	{ *out = -sn->in ; *outOff = sn->inOff ; return j ; }
       else
-	{ *out = 0 ; fprintf (stderr, "mismatching SIMPLE\n") ; return 0 ; }
+	die ("syngBWTnext %c %d failed to match %d to %d in SIMPLE",
+	     isPositive?'+':'-', k, in, isPositive?sn->in:-sn->out) ;
     }
   else if (*s & NODE_PACKED)
     nodeUnpack (n, s) ;
@@ -414,11 +436,11 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
     { int k = 0 ; // k is index of in within inList
       while (k < cn->inN && (inList[k].sync != in || inOffList[k] != inOff))
 	j += inList[k++].count ;
-      if (k == cn->inN) return 0 ;      // didn't find it
+      if (k == cn->inN) die ("syngBWTnext + %d failed to find %d in inList", k, in) ;
 	
       SyncCount *g0 = outGBWT, *g = g0 ;  // start of the GBWT to insert into
       I32 *counts = new0 (cn->outN, I32) ;
-      while (g->count < j)                // find GBWT block for j
+      while (g->count <= j)                // find GBWT block for j
 	{ j -= g->count ;
 	  counts[g->sync] += g->count ;
 	  ++g ;
@@ -434,11 +456,11 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
     { int k = 0 ; // k is index of in within outList
       while (k < cn->outN && (outList[k].sync != -in || outOffList[k] != inOff))
 	j += outList[k++].count ;
-      if (k == cn->outN) { fprintf (stderr, "can't find in %d in outList\n", in) ; return 0 ; }      // didn't find it
+      if (k == cn->outN) die ("syngBWTnext - %d failed to find %d in outList", k, in) ;
 	
       SyncCount *g0 = inGBWT, *g = g0 ;  // start of the GBWT to insert into
       I32 *counts = new0(cn->inN,I32) ;
-      while (g->count < j)                // find GBWT block for j
+      while (g->count <= j)                // find GBWT block for j
 	{ j -= g->count ;
 	  counts[g->sync] += g->count ;
 	  ++g ;
@@ -490,7 +512,8 @@ SyngBWTpath *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count)
   sbp->thisNode = startNode ;
   sbp->inCount = count ;
   if (count >= startCount (sb, startNode, false))
-    die ("syngBWTpathStartOld startNode %d count %d >= startCount %d", startNode, count, startCount(sb,startNode,false)) ;
+    die ("syngBWTpathStartOld startNode %d count %d >= startCount %d",
+	 startNode, count, startCount(sb,startNode,false)) ;
   return sbp ;
 }
 
@@ -576,8 +599,8 @@ SyngBWT *syngBWTread (OneFile *of)
       !oneStatsContains (of, 'V', 'b', 0, &bMax))    // longest b line
     die ("syngBWTread: failed to find max list lengths for vertices") ;
   SyncCount *eIn = new (EMax, SyncCount), *eOut = new (eMax, SyncCount) ;
-  SyncCount *gIn = new (BMax, SyncCount), *gOut = new (bMax, SyncCount) ;
-  U8        *inOff = new (EMax, U8), *outOff = new (eMax, U8) ;
+  SyncCount *gIn = new (bMax, SyncCount), *gOut = new (BMax, SyncCount) ;
+  I32       *inOff = new (EMax, I32), *outOff = new (eMax, I32) ;
   
   oneReadLine (of) ;
   int fixedLen = oneInt(of,0) ;
@@ -598,11 +621,11 @@ SyngBWT *syngBWTread (OneFile *of)
 	  { 
 	  case 'E':
 	    eIn[inN].sync = oneInt(of,0) ; inOff[inN] = oneInt(of,1) ; eIn[inN].count = oneInt(of,2) ;
-	    if (oneInt(of,0) == 0) startCount (sb, i, true) ; // start node
+	    if (eIn[inN].sync == 0) startCountAdd (sb, i, eIn[inN].count) ; // start node
 	    ++inN ; ++eTotal ; break ;
 	  case 'e':
 	    eOut[outN].sync = -oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
-	    if (oneInt(of,0) == 0) startCount (sb, -i, true) ; // start node
+	    if (eOut[outN].sync == 0) startCountAdd (sb, -i, eOut[outN].count) ; // start node
 	    ++outN ; ++eTotal ; break ;
 	  case 'B':
 	    oil = oneIntList(of) ;
@@ -635,20 +658,25 @@ SyngBWT *syngBWTread (OneFile *of)
       else				// complex node
 	{ *s = NODE_COMPLEX ;
 	  ComplexNode *cn = &(n->complex) ;
-	  cn->sc = new (inN + outN + inG + outG + (inN+outN+1)/2, SyncCount) ;
-	  memcpy (cn->sc, eIn, inN*sizeof(SyncCount)) ; cn->inN = inN ;
-	  memcpy (cn->sc+inN, eOut, outN*sizeof(SyncCount)) ; cn->outN = outN ;
-	  memcpy (cn->sc+inN+outN, gIn, inG*sizeof(SyncCount)) ; cn->inG = inG ;
-	  memcpy (cn->sc+inN+outN+inG, gOut, outG*sizeof(SyncCount)) ; cn->outG = outG ;
-	  I32* ip = (I32*)(cn->sc + inN + outN + inG + outG) ;
+	  if (!inG) { inG = 1 ; gIn->sync = 0 ; assert (inN == 1) ; gIn->count = eIn->count ; }
+	  if (!outG) { outG = 1 ; gOut->sync = 0 ; assert (outN == 1) ; gOut->count = eOut->count ; }
+	  SyncCount *sc = cn->sc = new (inN + outN + inG + outG + (inN+outN+1)/2, SyncCount) ;
+	  memcpy (sc, eIn, inN*sizeof(SyncCount)) ; cn->inN = inN ; sc += inN ;
+	  memcpy (sc, eOut, outN*sizeof(SyncCount)) ; cn->outN = outN ; sc += outN ;
+	  memcpy (sc, gIn, inG*sizeof(SyncCount)) ; cn->inG = inG ; sc += inG ;
+	  memcpy (sc, gOut, outG*sizeof(SyncCount)) ; cn->outG = outG ; sc += outG ;
+	  I32* ip = (I32*)sc ;
 	  memcpy (ip, inOff, inN*sizeof(I32)) ; ip += inN ;
 	  memcpy (ip, outOff, outN*sizeof(I32)) ;
 	}
+#ifdef TRACE_NODE
+      if (i == TRACE_NODE) { printf ("syngBWTread %d", TRACE_NODE) ; nodePrint (n, s) ; }
+#endif
     }
 
   newFree (eIn, EMax, SyncCount) ; newFree (eOut, eMax, SyncCount) ;
   newFree (gIn, bMax, SyncCount) ; newFree (gOut, BMax, SyncCount) ;
-  newFree (inOff, eMax, U8) ; newFree (outOff, eMax, U8) ;
+  newFree (inOff, EMax, I32) ; newFree (outOff, eMax, I32) ;
 
   fprintf (stdout, "read GBWT with %lld vertices and %lld edges\n", nv, eTotal) ;
   timeUpdate (stdout) ;

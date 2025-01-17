@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 14 09:27 2025 (rd109)
+ * Last edited: Jan 14 23:03 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -120,9 +120,11 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 	    sp->sync = oneInt(ti->ofIn,0) ; sp->pos = oneInt(ti->ofIn,1) ; // starting sync, pos
 	    SyngBWTpath *sbp = syngBWTpathStartOld (ti->sbwt, sp->sync, oneInt(ti->ofIn,2)) ;
 	    for (j = 1 ; j < si->nSync ; ++j)
-	      if (!syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos))
-		die ("failed GBWT extension: seq %d (%lld) sync %d from sync %d pos %d",
-		     i, arrayMax(ti->seqInfo)-1, j, sp[j-1].sync, sp[j-1].pos) ;
+	      if (syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos))
+		sp[j].pos += sp[j-1].pos ;
+	      else
+		die ("failed GBWT extension: seq %d count %d max %d from sync %d pos %d",
+		     i, j, si->nSync, sp[j-1].sync, sp[j-1].pos) ;
 	    syngBWTpathDestroy (sbp) ;
 	    break ;
 	  case 'z':
@@ -491,6 +493,7 @@ int main (int argc, char *argv[])
       else
 	{ if (ofIn) { oneFileClose (ofIn) ; ofIn = 0 ; }
 	  sio = seqIOopenRead (*argv, dna2index4Conv, 0) ;
+	  if (!sio) die ("failed to open sequence file %s", *argv) ;
 	  fprintf (stdout, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
 	}
       if (!ofIn && !sio)
