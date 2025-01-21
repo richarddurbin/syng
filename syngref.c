@@ -78,7 +78,7 @@ int main (int argc, char *argv[])
     OneFile *ofK = oneFileOpenRead (argv[0], schema, "khash", 1) ;
     if (!ofK) die ("failed to open .1khash file %s", argv[0]) ;
 
-    SeqIO   *sio = seqIOopenRead (argv[1], dna2indexConv, false) ;
+    SeqIO   *sio = seqIOopenRead (argv[1], dna2index4Conv, false) ;
     if (!sio) die ("failed to open sequence file %s", argv[1]) ;
     
     // set up output file here 
