@@ -86,6 +86,8 @@ static char *syngSchemaText =
   "O N 1 6 STRING            name of sequence, e.g. chr1\n"
   "O I 1 8 INT_LIST          list of indexes into name table for each sync: 0 if missing, -ve if RC\n"
   "D P 1 8 INT_LIST          positions in sequence\n"
+  "D O 1 8 INT_LIST          number of occurences in the reference\n"
+
   ;
 
 /****************** end of file ********************/

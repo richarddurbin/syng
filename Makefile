@@ -3,7 +3,7 @@
 CFLAGS = -O3
 #CFLAGS = -g	# for debugging
 
-ALL = syng ONEview syngmap
+ALL = syng ONEview syngmap syngref
 
 DESTDIR = ~/bin
 
@@ -57,6 +57,9 @@ syngprune: syngprune.c seqio.o ONElib.o $(UTILS_OBJS)
 
 syngbwt: syngbwt.c syng.h seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS) syngbwt.o
+
+syngref: syngref.c seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
 
 ONEview: ONEview.c ONElib.o
 	$(CC) $(CFLAGS) -o $@ $^ -lz
