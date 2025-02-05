@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 14 23:03 2025 (rd109)
+ * Last edited: Feb  5 16:30 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -583,7 +583,7 @@ int main (int argc, char *argv[])
 			{ SyngBWTpath *sbp = syngBWTpathStartNew (gbwtOut, sp->sync) ;
 			  oneInt(ofOut, 0) = sp->sync ;
 			  oneInt(ofOut, 1) = sp->pos ;
-			  oneInt(ofOut, 2) = sbp->inCount ;
+			  oneInt(ofOut, 2) = sbp->jLast ;
 			  oneInt(ofOut, 3) = nSync ;
 			  oneWriteLine (ofOut, 'Z', 0, 0) ;
 			  for (k = 1 ; k < nSync ; ++k)

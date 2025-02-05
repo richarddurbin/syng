@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 14 23:02 2025 (rd109)
+ * Last edited: Feb  5 16:26 2025 (rd109)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -474,22 +474,33 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
     }
 }
 
-/************* external interface to add a path *******************/
+/*******************************************************/
+/************* external interfaces *********************/
 
-SyngBWTpath *syngBWTpathStartNew (SyngBWT *sb, I32 startNode)
+static SyngBWTpath *pathCreate (SyngBWT *sb, I32 startNode)
 {
   SyngBWTpath *sbp = new0 (1, SyngBWTpath) ;
   sbp->sb = sb ;
   sbp->lastNode = 0 ;
   sbp->lastOff = 0 ;
   sbp->thisNode = startNode ;
-  sbp->inCount = startCount (sb, startNode, true) ;
+  return sbp ;
+}
+
+void syngBWTpathDestroy (SyngBWTpath *sbp) { newFree (sbp, 1, SyngBWTpath) ; }
+
+/************* interface to add a path *******************/
+
+SyngBWTpath *syngBWTpathStartNew (SyngBWT *sb, I32 startNode)
+{
+  SyngBWTpath *sbp = pathCreate (sb, startNode) ;
+  sbp->jLast = startCount (sb, startNode, true) ;
   return sbp ;
 }
 
 void syngBWTpathAdd (SyngBWTpath *sbp, I32 nextNode, I32 offset)
 {
-  sbp->inCount = syngBWTadd (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->inCount,
+  sbp->jLast = syngBWTadd (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->jLast,
 			     nextNode, offset) ;
   sbp->lastNode = sbp->thisNode ;
   sbp->lastOff = offset ;
@@ -497,20 +508,16 @@ void syngBWTpathAdd (SyngBWTpath *sbp, I32 nextNode, I32 offset)
 }
 
 void syngBWTpathFinish (SyngBWTpath *sbp)
-{ syngBWTadd (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->inCount, 0, 0) ;
-  newFree (sbp, 1, SyngBWTpath) ;
+{ syngBWTadd (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->jLast, 0, 0) ;
+  syngBWTpathDestroy (sbp) ;
 }
 
-/************* external interface to follow an existing path *******************/
+/************* interface to follow an existing path *******************/
 
 SyngBWTpath *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count)
 {
-  SyngBWTpath *sbp = new0 (1, SyngBWTpath) ;
-  sbp->sb = sb ;
-  sbp->lastNode = 0 ;
-  sbp->lastOff = 0 ;
-  sbp->thisNode = startNode ;
-  sbp->inCount = count ;
+  SyngBWTpath *sbp = pathCreate (sb, startNode) ;
+  sbp->jLast = count ;
   if (count >= startCount (sb, startNode, false))
     die ("syngBWTpathStartOld startNode %d count %d >= startCount %d",
 	 startNode, count, startCount(sb,startNode,false)) ;
@@ -519,7 +526,7 @@ SyngBWTpath *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count)
 
 bool syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *offset)
 {
-  sbp->inCount = syngBWTnext (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->inCount,
+  sbp->jLast = syngBWTnext (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->jLast,
 			      nextNode, offset) ;
   if (!*nextNode) return false ;
   sbp->lastNode = sbp->thisNode ;
@@ -528,8 +535,15 @@ bool syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *offset)
   return true ;
 }
 
-void syngBWTpathDestroy (SyngBWTpath *sbp) { newFree (sbp, 1, SyngBWTpath) ; }
+/************* interface to match a pattern *******************/
 
+SyngBWTpath *syngBWTmatchStart (SyngBWT *sb, I32 startNode)
+{
+  //  SyngBWTmatch *sbp = pathCreate (sb, startNode) ;
+  return 0 ;
+}
+
+/****************************************************************/
 /***************** read and write the SyngBWT *******************/
 
 void syngBWTwrite (OneFile *of, SyngBWT *sb)
@@ -546,7 +560,7 @@ void syngBWTwrite (OneFile *of, SyngBWT *sb)
 	{ SimpleNode *sn = &(n.simple) ;
 	  oneInt(of,0) = sn->in ; oneInt(of,1) = sn->inOff ; oneInt(of,2) = sn->inCount ;
 	  oneWriteLine(of, 'E', 0, 0) ; // + edge
-	  oneInt(of,0) = -sn->out ; oneInt(of,1) = sn->outOff ; oneInt(of,2) = sn->outCount ;
+	  oneInt(of,0) = sn->out ; oneInt(of,1) = sn->outOff ; oneInt(of,2) = sn->outCount ;
 	  oneWriteLine(of, 'e', 0, 0) ; // - edge
 	}
       else
@@ -624,7 +638,7 @@ SyngBWT *syngBWTread (OneFile *of)
 	    if (eIn[inN].sync == 0) startCountAdd (sb, i, eIn[inN].count) ; // start node
 	    ++inN ; ++eTotal ; break ;
 	  case 'e':
-	    eOut[outN].sync = -oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
+	    eOut[outN].sync = oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
 	    if (eOut[outN].sync == 0) startCountAdd (sb, -i, eOut[outN].count) ; // start node
 	    ++outN ; ++eTotal ; break ;
 	  case 'B':

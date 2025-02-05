@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  6 11:47 2025 (rd109)
+ * Last edited: Jan 15 00:30 2025 (rd109)
  * Created: Mon May 29 08:19:18 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -30,7 +30,7 @@ typedef struct {
 
 typedef struct {
   SyngBWT *sb ;
-  U32      lastNode, lastOff, thisNode, inCount ;
+  I32      lastNode, lastOff, thisNode, jLast, jMax ;
 } SyngBWTpath ;
 
 // in syngbwt.c
