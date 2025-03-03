@@ -20,7 +20,7 @@
  * -------------------------------------------------------------------
  * Exported functions:
  * HISTORY:
- * Last edited: Sep 28 00:55 2024 (rd109)
+ * Last edited: Mar  1 23:41 2025 (rd109)
  * Created: Fri Jan  7 09:20:25 2011 (rd)
  *-------------------------------------------------------------------
  */
@@ -44,10 +44,10 @@
 
 typedef struct {
   int nbits ;			/* power of 2 = size of arrays - 1 */
-  unsigned int mask ;		/* 2**nbits-1 */
+  I64 mask ;       		/* 2**nbits-1 */
   int n ;			/* number of items stored */
   int guard ;			/* number of slots to fill before doubling */
-  I64 *keys ;		/* array of keys stored */
+  HashKey *keys ;		/* array of keys stored */
   int *values ;			/* array of indices */
   Array freeList ;     		/* list of removed integers that can be reused */
   int nFree ;			/* number in free list */
@@ -57,17 +57,29 @@ typedef struct {
 static const int IS5 = (sizeof(I64)*8)/5 ;
 static const int IS7 = (sizeof(I64)*8)/7 ;
 
+static inline I64 hashFunc (TrueHash *h, HashKey hk)
+{ I64 z = IS5, x = hk.i, hash ;
+  for (hash = x, x >>= 5 ; z-- ; x >>= 5) hash ^= x ;
+  return hash & h->mask ;
+}
+
+static inline I64 deltaFunc (TrueHash *h, HashKey hk)
+{ I64 z = IS7 , x = hk.i, delta ;
+  for (delta = x, x >>= 7 ; z-- ; x >>= 7) delta ^= x ;
+  return (delta & h->mask) | 0x01 ;  /* delta odd is prime relative to  2^m */
+}
+
 #define HASH_FUNC(_key) { register int z = IS5, x = _key.i ; \
-		  for (hash = x, x >>= 5 ; z-- ; x >>= 5) hash ^= x ; \
-		  hash &= h->mask ; \
-		}
+		          for (hash = x, x >>= 5 ; z-- ; x >>= 5) hash ^= x ; \
+			  hash &= h->mask ;				\
+                        }
 
-#define DELTA(_key)   { register int z = IS7, x = _key.i ; \
-		       for (delta = x, x >>= 7 ; z-- ; x >>= 7) delta ^= x ; \
-		       delta = (delta & h->mask) | 0x01 ; \
-		   }  /* delta odd is prime relative to  2^m */
+#define DELTA(_key) { register int z = IS7, x = _key.i ; \
+		      for (delta = x, x >>= 7 ; z-- ; x >>= 7) delta ^= x ; \
+		      delta = (delta & h->mask) | 0x01 ; \
+                    }
 
-static int REMOVED ;
+static HashKey REMOVED ;
 
 static int nCreated = 0 ;
 static int nDestroyed = 0 ;
@@ -80,10 +92,10 @@ static I64 nNotFound = 0 ;
 
 Hash hashCreate (int n)
 {
-  TrueHash *h = (TrueHash *) myalloc (sizeof (TrueHash)) ;
+  TrueHash *h = new0 (1, TrueHash) ;
 
   if (sizeof(I64) != sizeof(HashKey)) die ("type size mismatch in hashCreate") ;
-  REMOVED = (I64MAX-1)^I64MAX ; // was in initialiser, but Linux does not like that??
+  REMOVED = hashInt((I64MAX-1)^I64MAX) ;
   
   if (n < 64) n = 64 ;
   --n ;
@@ -91,9 +103,8 @@ Hash hashCreate (int n)
   while (n >>= 1) ++h->nbits ; /* number of left most bit + 1 */
   h->mask = (1 << h->nbits) - 1 ;
   h->guard = (1 << (h->nbits - 1)) ;
-  h->keys = (I64*) myalloc (sizeof(I64)*(1 << h->nbits)) ;
-  memset (h->keys, 0, sizeof(I64)*(1 << h->nbits)) ;
-  h->values = (int*) myalloc (sizeof(int)*(1 << h->nbits)) ;
+  h->keys = new0 (1 << h->nbits, HashKey) ;
+  h->values = new (1 << h->nbits, int) ;
   h->n = 0 ;
   h->freeList = arrayCreate (32, int) ;
   h->nFree = 0 ;
@@ -104,10 +115,10 @@ Hash hashCreate (int n)
 void hashDestroy (Hash hx)
 {
   TrueHash *h = (TrueHash*) hx ;
-  free (h->keys) ;
-  free (h->values) ;
+  newFree (h->keys, 1 << h->nbits, HashKey) ;
+  newFree (h->values, 1 << h->nbits, int) ;
   arrayDestroy (h->freeList) ;
-  free (h) ;
+  newFree (h, 1, TrueHash) ;
   ++nDestroyed ;
 }
 
@@ -123,11 +134,10 @@ void hashClear (Hash hx)
 
 static void hashDouble (TrueHash *h)
 {
-  int oldsize, newsize ;
-  I64 hash, delta = 0 ;
-  I64 *oldKeys, *kp ;
-  int *oldValues, i ;
-  HashKey hk ;
+  int      oldsize, newsize ;
+  I64      hash, delta = 0 ;
+  HashKey *oldKeys, *kp ;
+  int     *oldValues, i ;
 
   oldsize = 1 << h->nbits ;
   ++h->nbits ;
@@ -136,16 +146,15 @@ static void hashDouble (TrueHash *h)
   h->guard = (1 << (h->nbits - 1)) ;
   
   oldKeys = h->keys ;
-  h->keys  = (I64*) myalloc (sizeof(I64)*newsize) ;
-  memset (h->keys, 0, sizeof(I64)*(1 << h->nbits)) ;
+  h->keys  = new0 (newsize, HashKey) ;
   oldValues = h->values ;
-  h->values = (int*) myalloc (sizeof(int)*newsize) ;
+  h->values = new (newsize, int) ;
 
   for (i = 0, kp = oldKeys ; i < oldsize ; ++i, ++kp)
-    if (*kp && *kp != REMOVED)
-      { hk.i = *kp ; HASH_FUNC(hk) ;
+    if (kp->i && kp->i != REMOVED.i)
+      { hash = hashFunc(h, *kp) ;
         while (true)
-          if (!h->keys[hash])  /* don't need to test REMOVED */
+          if (!h->keys[hash].i)  /* don't need to test REMOVED */
 	    { h->keys[hash] = *kp ;
 	      h->values[hash] = oldValues[i] ;
 	      --h->guard ;	/* NB don't need to change h->n */
@@ -154,13 +163,13 @@ static void hashDouble (TrueHash *h)
 	    }
 	  else
             { nBounced++ ;
-	      if (!delta) DELTA(hk) ;
+	      if (!delta) delta = deltaFunc (h, *kp) ;
 	      hash = (hash + delta) & h->mask ;
 	    }
       }
 
-  free (oldKeys) ;
-  free (oldValues) ;
+  newFree (oldKeys, oldsize, HashKey) ;
+  newFree (oldValues, oldsize, int) ;
 }
 
 /************************ Searches  ************************************/
@@ -171,20 +180,20 @@ bool hashFind (Hash hx, HashKey k, int *index)
   TrueHash *h = (TrueHash*) hx ;
   I64 hash, delta = 0 ;
 
-  HASH_FUNC(k) ;
+  hash = hashFunc (h,k) ;
   while (true)
-    if (h->keys[hash] == k.i)
+    if (h->keys[hash].i == k.i)
       { nFound++ ;
 	if (index) *index = h->values[hash] - 1 ;
 	return true ;
       }
-    else if (!h->keys[hash])
+    else if (!h->keys[hash].i)
       { nNotFound++ ;
 	return false ;
       }
     else 
       { nBounced++ ;
-	if (!delta) DELTA(k) ;
+	if (!delta) delta = deltaFunc (h,k) ;
 	hash = (hash + delta) & h->mask ;
       }
 }
@@ -200,11 +209,11 @@ bool hashAdd (Hash hx, HashKey k, int *index)
   if (!h->guard)
     hashDouble (h) ;
 
-  HASH_FUNC(k) ;
+  hash = hashFunc (h,k) ;
   while (true)
-    if (!h->keys[hash] || h->keys[hash] == REMOVED)	/* free slot to fill */
-      { if (!h->keys[hash]) --h->guard ;
-	h->keys[hash] = k.i ;
+    if (!h->keys[hash].i || h->keys[hash].i == REMOVED.i)	/* free slot to fill */
+      { if (!h->keys[hash].i) --h->guard ;
+	h->keys[hash] = k ;
 	if (h->nFree)
 	  h->values[hash] = arr(h->freeList, h->nFree--, int) ;
 	else
@@ -213,14 +222,14 @@ bool hashAdd (Hash hx, HashKey k, int *index)
 	if (index) *index = h->values[hash] - 1 ;
 	return true ;
       }
-    else if (h->keys[hash] == k.i)		/* already there */
+    else if (h->keys[hash].i == k.i)		/* already there */
       { ++nFound ;
 	if (index) *index = h->values[hash] - 1 ;
 	return false ;
       }
     else
       { nBounced++ ;
-	if (!delta) DELTA (k) ;
+	if (!delta) delta = deltaFunc (h,k) ;
 	hash = (hash + delta) & h->mask ;
       }
 }
@@ -232,21 +241,21 @@ bool hashRemove (Hash hx, HashKey k)
   TrueHash *h = (TrueHash*) hx ;
   I64 hash, delta = 0 ;
 
-  HASH_FUNC(k) ;
+  hash = hashFunc (h,k) ;
   while (true)
-    if (h->keys[hash] == k.i)
-      { h->keys[hash] = REMOVED ;
+    if (h->keys[hash].i == k.i)
+      { h->keys[hash].i = REMOVED.i ;
 	array(h->freeList, ++h->nFree, int) = h->values[hash] ;
 	++nFound ;
 	return true ;
       }
-    else if (!h->keys[hash])
+    else if (!h->keys[hash].i)
       { nNotFound++ ;
 	return false ;
       }
     else 
       { nBounced++ ;
-	if (!delta) DELTA(k) ;
+	if (!delta) delta = deltaFunc (h,k) ;
 	hash = (hash + delta) & h->mask ;
       }
 }
@@ -266,8 +275,8 @@ bool hashNextKeyValue (Hash hx, HashKey *kp, int *ip)
   int size = 1 << h->nbits ;
 
   while (++h->iter < size)
-    if (h->keys[h->iter] && h->keys[h->iter] != REMOVED)
-      { kp->i = h->keys[h->iter] ;
+    if (h->keys[h->iter].i && h->keys[h->iter].i != REMOVED.i)
+      { kp->i = h->keys[h->iter].i ;
 	if (ip) *ip = h->values[h->iter] - 1 ;
 	return true ;
       }

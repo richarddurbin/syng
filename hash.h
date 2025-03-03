@@ -25,7 +25,7 @@
       - support removal of objects, with free-list to reuse indices of removed objects
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 11 00:13 2024 (rd109)
+ * Last edited: Mar  1 23:03 2025 (rd109)
  * * Jan 24 07:01 2019 (rd109): restructured so hashAdd() and hashFind() return bool 
          and the index value is returned via a pointer, as for DICT.
  * Created: Thu Jan 13 10:57:20 2011 (rd)
@@ -38,14 +38,17 @@
 #include "utils.h"
 
 typedef void* Hash ;
-typedef union {I64 i ; double f ; struct { I32 ia, ib ; } ; void* p ;} HashKey ;
-static  HashKey _hk ;
+typedef union {I64 i ; double f ; struct { I32 ia, ib ; } ; const void* p ;} HashKey ;
 
 /* define keys so as to allow ourselves to hash value 0 */
-#define HASH_INT(x) (_hk.i = ((I64)x)^I64MAX, _hk)
-#define HASH_INT2(x,y) (_hk.ia = ((I32)x), _hk.ib = ((I32)y), _hk.i ^= I64MAX, _hk)
-#define HASH_FLOAT(x) (_hk.f = (x), _hk.i ^= I64MAX, _hk)
-#define HASH_PTR(x) (_hk.p = (x), _hk)
+static inline HashKey hashInt (const I64 x)
+	{ HashKey hk ; hk.i = x^I64MAX ; return hk ; }
+static inline HashKey hashInt2 (const I32 x, const I32 y)
+	{ HashKey hk ; hk.ia = x ; hk.ib = y ; hk.i ^= I64MAX ; return hk ; }
+static inline HashKey hashFloat (const double x)
+	{ HashKey hk ; hk.f = x ; hk.i ^= I64MAX ; return hk ; }
+static inline HashKey hashPtr (const void *x)
+	{ HashKey hk ; hk.p = x ; return hk ; }
 
 Hash hashCreate (int n) ;
 void hashDestroy (Hash h) ;
