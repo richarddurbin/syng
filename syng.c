@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Feb  5 16:30 2025 (rd109)
+ * Last edited: Mar  3 18:17 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -23,6 +23,9 @@
 #include "ONElib.h"
 
 #include "syng.h"
+
+extern bool DEBUG_GBWT ; // UGLY BACKDOORS FOR DEBUGGING ONLY!
+extern int  NSEQ ;
 
 /************************* thread functions ****************************/
 
@@ -92,7 +95,8 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 static void *threadProcessPath (void* arg) // read in paths, make sequences if necessary
 {
   ThreadInfo *ti = (ThreadInfo*) arg ;
-  int i, j ;
+  int klen = ti->kh->len ;
+  int i, j, k ;
   I64 seqStart = 0, spStart = 0 ;
   U64 *uBuf = new(ti->kh->plen,U64) ;
 
@@ -119,13 +123,17 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 	    sp = arrp(ti->syncPos, spStart, SyncPos) ; spStart += si->nSync ;
 	    sp->sync = oneInt(ti->ofIn,0) ; sp->pos = oneInt(ti->ofIn,1) ; // starting sync, pos
 	    SyngBWTpath *sbp = syngBWTpathStartOld (ti->sbwt, sp->sync, oneInt(ti->ofIn,2)) ;
+//	    printf ("starting path %d length %d with sync %d count %d at %d\n", i, (int)si->nSync, (int)sp->sync, (int)oneInt(ti->ofIn,2), (int)sp->pos) ;
 	    for (j = 1 ; j < si->nSync ; ++j)
-	      if (syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos))
-		sp[j].pos += sp[j-1].pos ;
+	      if (syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos)) sp[j].pos += sp[j-1].pos ;
+//		{ sp[j].pos += sp[j-1].pos ;
+//		  printf (" %d", (int)sp[j].sync) ;
+//		}
 	      else
 		die ("failed GBWT extension: seq %d count %d max %d from sync %d pos %d",
 		     i, j, si->nSync, sp[j-1].sync, sp[j-1].pos) ;
 	    syngBWTpathDestroy (sbp) ;
+	    printf ("\n") ;
 	    break ;
 	  case 'z':
 	    si->nSync = oneLen(ti->ofIn) ;
@@ -157,6 +165,10 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 	  for (j = 0 ; j < si->nSync ; ++j)
 	    { assert (sp) ;
 	      if (!sp[j].sync) continue ;
+	      if (j && sp[j].pos > sp[j-1].pos + klen) // a poly-X run - fill it in
+		{ char c = seq[sp[j-1].pos+klen-1] ;
+		  for (k = sp[j-1].pos+klen ; k < sp[j].pos ; ++k) seq[k] = c ;
+		}
 	      kmerHashSeq (ti->kh, sp[j].sync, seq+sp[j].pos) ;
 	    }
 	}
@@ -578,6 +590,7 @@ int main (int argc, char *argv[])
 		      oneInt(ofOut, 0) = arrp(ti->seqInfo, j, SeqInfo)->len ;
 		      oneInt(ofOut, 1) = nSource ; // first write the path number
 		      oneInt(ofOut, 2) = nSeq-nSeq0+1 ;
+		      NSEQ = nSeq-nSeq0+1 ;
 		      oneWriteLine (ofOut, 'P', 0, 0) ;
 		      if (nSync && outType == GBWT) // add paths to the GBWT and write the start nodes
 			{ SyngBWTpath *sbp = syngBWTpathStartNew (gbwtOut, sp->sync) ;
@@ -589,11 +602,13 @@ int main (int argc, char *argv[])
 			  for (k = 1 ; k < nSync ; ++k)
 			    syngBWTpathAdd (sbp, sp[k].sync, sp[k].pos - sp[k-1].pos) ;
 			  syngBWTpathFinish (sbp) ;
+			  DEBUG_GBWT = false ;
 			  // now add the reverse path
 			  sbp = syngBWTpathStartNew (gbwtOut, -sp[nSync-1].sync) ;
 			  for (k = nSync-2 ; k >= 0 ; --k)
 			    syngBWTpathAdd (sbp, -sp[k].sync, sp[k+1].pos - sp[k].pos) ;
 			  syngBWTpathFinish (sbp) ;
+			  DEBUG_GBWT = false ;
 			}
 		      else if (nSync && outType == PATH)
 			{ static I64 *x = 0 ; // memory leak here...

@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Feb  5 16:26 2025 (rd109)
+ * Last edited: Mar  3 18:20 2025 (rd109)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -53,6 +53,9 @@ static I32  nodeUnpack (Node *n, U8 *status) ; // returns new size in bytes
 
 static inline int intPut (U8 *u, I32 val) ;   // at end of file for integer byte packing
 static inline int intGet (U8 *u, I32 *pval) ; // at end of file for integer byte unpacking
+
+int NSEQ = 0 ;             // UGLY BACKDOORS FOR DEBUGGING ONLY!
+bool DEBUG_GBWT = false ;
 
 /*********************** create and destroy ****************************/
 
@@ -111,11 +114,11 @@ static U32 startCount (SyngBWT *sb, I32 k, bool isAdd)
     }
   int index ;
   if (isAdd)
-    { hashAdd (sb->startHash, HASH_INT(k), &index) ;
+    { hashAdd (sb->startHash, hashInt(k), &index) ;
       return array(sb->startHashCount, index, U32)++ ;
     }
   else
-    { if (!hashFind (sb->startHash, HASH_INT(k), &index)) return 0 ;
+    { if (!hashFind (sb->startHash, hashInt(k), &index)) return 0 ;
       return arr(sb->startHashCount, index, U32) ;
     }
 }
@@ -127,7 +130,7 @@ static void startCountAdd (SyngBWT *sb, I32 k, I32 count)
       sb->startHashCount = arrayCreate (8192, U32) ;
     }
   int index ;
-  hashAdd (sb->startHash, HASH_INT(k), &index) ;
+  hashAdd (sb->startHash, hashInt(k), &index) ;
   array(sb->startHashCount, index, U32) += count ;
 }
 
@@ -165,6 +168,17 @@ static void nodePrint (Node *n, U8 *s)
   else die ("\n  nodePrint: unrecognisable node type") ;
   fflush (stdout) ;
 }
+
+static void syncPrint (SyngBWT *sb, I32 k)
+{
+  printf ("node %d", k) ;
+  if (k < 0) k = -k ;
+  Node *n = arrayp(sb->node, k, Node) ;
+  U8   *s = arrayp(sb->status, k, U8) ;
+  nodePrint (n, s) ;
+}
+
+// #define TRACE_NODE 352
 
 static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I32 outOff) 
 {
@@ -220,6 +234,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef TRACE_NODE
 	  if (k == TRACE_NODE) { printf (" - update simple node") ; nodePrint (n, s) ; }
 #endif
+	  if (DEBUG_GBWT) printf ("  k %d SIMPLE jNext %d\n", k, j) ;
 	  return j ;
 	}
       else                  // expand out to Complex then fall through to code below
@@ -252,6 +267,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
   
   // now node must be complex
   ComplexNode *cn = &(n->complex) ;
+  if (DEBUG_GBWT) printf ("  k %d COMPLEX %c\n", k, isPositive?'+':'-') ;
 
   // strategy is to conceptually separate out the SyncCount lists as below
   // update them in place if we can
@@ -284,10 +300,13 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
       printf ("adding %d to outList - ", out) ;
 #endif
+      if (DEBUG_GBWT) printf ("    adding %d to outlist at %d\n", out, outK) ;
     }
 
   // update the list count, only for the side we are actually coming from
   if (isPositive) ++inList[inK].count ; else ++outList[outK].count ;
+
+  if (DEBUG_GBWT) printf ("    in %d inK %d out %d outK %d\n", in, inK, out, outK) ;
 
   // now we need to update the GBWT
   SyncCount *g0 = isPositive ? outGBWT : inGBWT, *g = g0 ;  // start of the GBWT to insert into
@@ -298,6 +317,8 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
   while (sumCount + g->count < pre)                         // find GBWT block for j
     { sumCount += g->count ;
       if (g->sync == target) jNext += g->count ;
+      if (DEBUG_GBWT && g->sync == target) printf ("    jNext %d at g %d (%d,%d)\n",
+						   jNext, (int)(g-g0), g->sync, g->count) ;
       ++g ;
     }
   if (g-g0 >= (isPositive ? cn->outG : cn->inG))
@@ -307,9 +328,10 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
     }
   if (g->sync == target)                                    // within matching block - easy
     { jNext -= sumCount - pre ;
+      if (DEBUG_GBWT) printf ("    within_block %d sumCount %d pre %d\n", (int)(g-g0), sumCount, pre) ;
       g->count++ ;
 #ifdef DEBUG_ADD  
-      printf ("increment g block %d - ", (int)(g-g0)) ;
+      printf ("increment block %d - ", (int)(g-g0)) ;
 #endif
     }
   else if (sumCount + g->count == pre)                      // at the end of this GBWT block
@@ -339,8 +361,28 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 	    }
 	}
     }
+  else if (pre == 0) // at very start - like above case but don't increment g
+    { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
+      if (isPositive)
+	{ int z ; for (z = cn->outG ; z > g - g0 ; --z) outGBWT[z] = outGBWT[z-1] ;
+	  outGBWT[z].sync = target ; outGBWT[z].count = 1 ; // again jNext is correct
+#ifdef DEBUG_ADD  
+	  printf ("adding out-block %d - ", z) ;
+#endif
+	  ++cn->outG ;
+	}
+      else
+	{ int z ; for (z = cn->inG ; z > g - g0 ; --z) inGBWT[z] = inGBWT[z-1] ;
+	  inGBWT[z].sync = target ; inGBWT[z].count = 1 ;
+#ifdef DEBUG_ADD  
+	  printf ("adding in-block %d - ", z) ;
+#endif
+	  ++cn->inG ;
+	}
+    }
   else // we are in the middle of a GBWT block - we need to add two rows: new one and reversal
     { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
+      if (DEBUG_GBWT) printf ("    adding two blocks\n") ;
       if (isPositive)
 	{ int z ; for (z = cn->outG+1 ; z > g - g0 + 2 ; --z) outGBWT[z] = outGBWT[z-2] ;
 	  outGBWT[z].sync = outGBWT[z-2].sync ; outGBWT[z].count = sumCount + g->count - pre ; --z ;
@@ -526,13 +568,17 @@ SyngBWTpath *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count)
 
 bool syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *offset)
 {
+  int oldjLast = sbp->jLast ;
   sbp->jLast = syngBWTnext (sbp->sb, sbp->thisNode, sbp->lastNode, sbp->lastOff, sbp->jLast,
 			      nextNode, offset) ;
-  if (!*nextNode) return false ;
-  sbp->lastNode = sbp->thisNode ;
-  sbp->lastOff = *offset ;
-  sbp->thisNode = *nextNode ;
-  return true ;
+  if (*nextNode)
+    { sbp->lastNode = sbp->thisNode ;
+      sbp->lastOff = *offset ;
+      sbp->thisNode = *nextNode ;
+      return true ;
+    }
+  else
+    return false ;
 }
 
 /************* interface to match a pattern *******************/
@@ -584,7 +630,7 @@ void syngBWTwrite (OneFile *of, SyngBWT *sb)
 	      oneWriteLine (of, 'C', cn->outG, buf) ;
 	    }
 	  for (j = 0 ; j < cn->outN ; ++j) // outgoing edges
-	    { oneInt(of,0) = -outList[j].sync; oneInt(of,1) = outOffList[j] ; 
+	    { oneInt(of,0) = outList[j].sync; oneInt(of,1) = outOffList[j] ; 
 	      oneInt(of,2) = outList[j].count ; oneWriteLine(of, 'e', 0, 0) ; // - edge
 	    }
 	  if (cn->inG > 1) // incoming GBWT, which follows from the outgoing edges (in reverse)
