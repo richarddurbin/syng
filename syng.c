@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  3 18:17 2025 (rd109)
+ * Last edited: Mar  3 21:15 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -133,7 +133,7 @@ static void *threadProcessPath (void* arg) // read in paths, make sequences if n
 		die ("failed GBWT extension: seq %d count %d max %d from sync %d pos %d",
 		     i, j, si->nSync, sp[j-1].sync, sp[j-1].pos) ;
 	    syngBWTpathDestroy (sbp) ;
-	    printf ("\n") ;
+//	    printf ("\n") ;
 	    break ;
 	  case 'z':
 	    si->nSync = oneLen(ti->ofIn) ;
