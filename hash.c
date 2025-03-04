@@ -20,7 +20,7 @@
  * -------------------------------------------------------------------
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  1 23:41 2025 (rd109)
+ * Last edited: Mar  4 01:41 2025 (rd109)
  * Created: Fri Jan  7 09:20:25 2011 (rd)
  *-------------------------------------------------------------------
  */
@@ -58,13 +58,13 @@ static const int IS5 = (sizeof(I64)*8)/5 ;
 static const int IS7 = (sizeof(I64)*8)/7 ;
 
 static inline I64 hashFunc (TrueHash *h, HashKey hk)
-{ I64 z = IS5, x = hk.i, hash ;
+{ int z = IS5 ; I64 x = hk.i, hash ;
   for (hash = x, x >>= 5 ; z-- ; x >>= 5) hash ^= x ;
   return hash & h->mask ;
 }
 
 static inline I64 deltaFunc (TrueHash *h, HashKey hk)
-{ I64 z = IS7 , x = hk.i, delta ;
+{ int z = IS7 ; I64 x = hk.i, delta ;
   for (delta = x, x >>= 7 ; z-- ; x >>= 7) delta ^= x ;
   return (delta & h->mask) | 0x01 ;  /* delta odd is prime relative to  2^m */
 }
@@ -159,6 +159,7 @@ static void hashDouble (TrueHash *h)
 	      h->values[hash] = oldValues[i] ;
 	      --h->guard ;	/* NB don't need to change h->n */
 	      ++nAdded ;
+	      delta = 0 ;
 	      break ;
 	    }
 	  else
