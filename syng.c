@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  3 21:15 2025 (rd109)
+ * Last edited: Mar 16 12:30 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -299,8 +299,8 @@ static void qhist (Array a, FILE *f)
 static char usage[] =
   "Usage: syng <operation>* <input>*\n"
   "possible operations are:\n"
-  "  -w <window length>     : [1023] syncmer length = w + k\n"
-  "  -k <smer length>       : [16] must be under 32\n"
+  "  -w <window length>     : [55] syncmer length = w + k\n"
+  "  -k <smer length>       : [8] must be under 32\n"
   "  -seed <seed>           : [7] for the hashing function\n"
   "  -T <threads>           : [8] number of threads\n"
   "  -o <outfile prefix>    : [syngOut] applies to all following write* options\n"
