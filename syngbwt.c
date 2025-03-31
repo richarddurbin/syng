@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  3 18:20 2025 (rd109)
+ * Last edited: Mar 30 22:31 2025 (rd109)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -53,9 +53,6 @@ static I32  nodeUnpack (Node *n, U8 *status) ; // returns new size in bytes
 
 static inline int intPut (U8 *u, I32 val) ;   // at end of file for integer byte packing
 static inline int intGet (U8 *u, I32 *pval) ; // at end of file for integer byte unpacking
-
-int NSEQ = 0 ;             // UGLY BACKDOORS FOR DEBUGGING ONLY!
-bool DEBUG_GBWT = false ;
 
 /*********************** create and destroy ****************************/
 
@@ -113,6 +110,7 @@ static U32 startCount (SyngBWT *sb, I32 k, bool isAdd)
       sb->startHashCount = arrayCreate (8192, U32) ;
     }
   int index ;
+  
   if (isAdd)
     { hashAdd (sb->startHash, hashInt(k), &index) ;
       return array(sb->startHashCount, index, U32)++ ;
@@ -234,7 +232,6 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef TRACE_NODE
 	  if (k == TRACE_NODE) { printf (" - update simple node") ; nodePrint (n, s) ; }
 #endif
-	  if (DEBUG_GBWT) printf ("  k %d SIMPLE jNext %d\n", k, j) ;
 	  return j ;
 	}
       else                  // expand out to Complex then fall through to code below
@@ -267,7 +264,6 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
   
   // now node must be complex
   ComplexNode *cn = &(n->complex) ;
-  if (DEBUG_GBWT) printf ("  k %d COMPLEX %c\n", k, isPositive?'+':'-') ;
 
   // strategy is to conceptually separate out the SyncCount lists as below
   // update them in place if we can
@@ -300,13 +296,10 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 #ifdef DEBUG_ADD  
       printf ("adding %d to outList - ", out) ;
 #endif
-      if (DEBUG_GBWT) printf ("    adding %d to outlist at %d\n", out, outK) ;
     }
 
   // update the list count, only for the side we are actually coming from
   if (isPositive) ++inList[inK].count ; else ++outList[outK].count ;
-
-  if (DEBUG_GBWT) printf ("    in %d inK %d out %d outK %d\n", in, inK, out, outK) ;
 
   // now we need to update the GBWT
   SyncCount *g0 = isPositive ? outGBWT : inGBWT, *g = g0 ;  // start of the GBWT to insert into
@@ -317,8 +310,6 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
   while (sumCount + g->count < pre)                         // find GBWT block for j
     { sumCount += g->count ;
       if (g->sync == target) jNext += g->count ;
-      if (DEBUG_GBWT && g->sync == target) printf ("    jNext %d at g %d (%d,%d)\n",
-						   jNext, (int)(g-g0), g->sync, g->count) ;
       ++g ;
     }
   if (g-g0 >= (isPositive ? cn->outG : cn->inG))
@@ -328,7 +319,6 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
     }
   if (g->sync == target)                                    // within matching block - easy
     { jNext -= sumCount - pre ;
-      if (DEBUG_GBWT) printf ("    within_block %d sumCount %d pre %d\n", (int)(g-g0), sumCount, pre) ;
       g->count++ ;
 #ifdef DEBUG_ADD  
       printf ("increment block %d - ", (int)(g-g0)) ;
@@ -382,7 +372,6 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
     }
   else // we are in the middle of a GBWT block - we need to add two rows: new one and reversal
     { scSplit (cn, &inList, &outList, &inGBWT, &outGBWT, &inOffList, &outOffList) ;
-      if (DEBUG_GBWT) printf ("    adding two blocks\n") ;
       if (isPositive)
 	{ int z ; for (z = cn->outG+1 ; z > g - g0 + 2 ; --z) outGBWT[z] = outGBWT[z-2] ;
 	  outGBWT[z].sync = outGBWT[z-2].sync ; outGBWT[z].count = sumCount + g->count - pre ; --z ;
@@ -742,6 +731,43 @@ SyngBWT *syngBWTread (OneFile *of)
   timeUpdate (stdout) ;
   
   return sb ;
+}
+
+/*****************************************************************************/
+
+void syngBWTstat (SyngBWT *sb)
+{
+  int nSimple = 0, maxTotal = 0 ;
+  Array eHist = arrayCreate (1024, int) ;
+  Array cHist = arrayCreate (1024, int) ;
+  int i, j ;
+  for (i = 1 ; i < arrayMax(sb->node) ; ++i)
+    { Node n = arr(sb->node, i, Node) ;
+      U8   s = arr(sb->status, i, U8) ;
+      if (!s) continue ; // must come after we have written the node
+      if (s & NODE_SIMPLE) ++nSimple ;
+      else
+	{ if (s & NODE_PACKED) nodeUnpack (&n, &s) ;
+	  ComplexNode *cn = &(n.complex) ;
+	  SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+
+	  int total = 0 ;
+	  ++array(eHist,cn->inN,int) ;
+	  for (j = 0 ; j < cn->inN ; ++j)
+	    { ++array(cHist,inList[j].count,int) ; total += inList[j].count ; }
+	  if (total > maxTotal) maxTotal = total ;
+
+	  total = 0 ;
+	  ++array(eHist,cn->outN,int) ;
+	  for (j = 0 ; j < cn->outN ; ++j)
+	    { ++array(cHist,outList[j].count,int) ; total += outList[j].count ; }
+	  if (total > maxTotal) maxTotal = total ;
+	}
+    }
+  printf ("  %d nodes of which %d are simple\n", (int)arrayMax(sb->node), nSimple) ;
+  printf ("    max list %d max count %d maxTotal %d\n",
+	  (int)arrayMax(eHist), (int)arrayMax(cHist), maxTotal) ;
+  arrayDestroy (eHist) ; arrayDestroy (cHist) ;
 }
 
 /**************** basic node creation, packing and unpacking ******************/
