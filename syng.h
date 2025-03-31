@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 15 00:30 2025 (rd109)
+ * Last edited: Mar 27 21:47 2025 (rd109)
  * Created: Mon May 29 08:19:18 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -13,8 +13,8 @@
 #include "utils.h"
 #include "array.h"
 #include "hash.h"
-#include "kmerhash.h"
 #include "ONElib.h"
+#include "syncmerset.h"
 
 #define SYNG_VERSION  "2.0"
 
@@ -45,6 +45,7 @@ void           syngBWTpathFinish (SyngBWTpath *sbp) ; // use when creating a new
 SyngBWTpath   *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count) ; // follow an existing path
 bool           syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *nextPos) ;
 void           syngBWTpathDestroy (SyngBWTpath *sbp) ;
+void           syngBWTstat (SyngBWT *sb) ;
 
 static char *syngSchemaText =
   "1 3 def 1 0               schema for syng\n"
@@ -75,11 +76,13 @@ static char *syngSchemaText =
   "D Y 1 3 DNA               suffix after last node - required to fully reconstruct\n"
   ".\n"
   "P 5 khash                 KMER HASH\n"
+  "S 7 syncset               SYNCMER SET\n"
   "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
-  "D t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
-  "O S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
+  "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
+  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
   "D L 1 8 INT_LIST          locations in the table\n"
   "D C 1 8 INT_LIST          kmer counts\n"
+  "D M 1 6 STRING            maximum count in any input - (1..127)\n"
   ".\n"
   "P 3 map                   MAP\n"
   "P 3 ref                   REFERENCE INFORMATION\n"
