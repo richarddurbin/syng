@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  5 12:30 2025 (rd109)
+ * Last edited: Mar 16 22:50 2025 (rd109)
  * Created: Tue Sep  3 19:38:07 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -31,7 +31,6 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->pack = new0(kh->plen*kh->psize, U64) ;
   kh->seqbuf = new0(len+1,char) ;
   kh->seqPack = seqPackCreate ('a') ; // 'a' means unpack into acgt
-  kh->count = arrayCreate (size>>2, I64) ;
   return kh ; 
 }
 
@@ -41,7 +40,6 @@ void kmerHashDestroy (KmerHash *kh)
   newFree (kh->pack, kh->psize*kh->plen, U64) ;
   newFree (kh->seqbuf, kh->len+1, char) ;
   seqPackDestroy (kh->seqPack) ;
-  arrayDestroy (kh->count) ;
   newFree (kh, 1, KmerHash) ;
 }
 
@@ -90,7 +88,6 @@ static inline bool find (KmerHash *kh, U64 *u, I64 *index, bool isRC, U64 *newLo
   while (x)
     { if (isMatch (u, packseq(kh,x), kh->plen)) // found
 	{ if (index) *index = isRC ? -x : x ;
-	  if (isSafe) ++array(kh->count, x, I64) ;
 	  return true ;
 	}
       if (!delta) delta = hashDelta (u, kh->plen, kh->dim) ;
@@ -160,7 +157,6 @@ bool kmerHashAdd (KmerHash *kh, char *dna, I64 *index)
   if (isFound) return false ;
 
   kh->table[newLoc] = ++kh->max ; // add the new location
-  array(kh->count, kh->max, I64) = 1 ;
   if (index) *index = isRC ? -kh->max : kh->max ;
   
   if (kh->max == kh->psize-1) doubleTable (kh) ;
@@ -177,7 +173,6 @@ bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and c
 
   memcpy (packseq(kh,++kh->max), u, kh->plen*sizeof(I64)) ; // have to copy it
   kh->table[newLoc] = kh->max ; // add the new location
-  array(kh->count, kh->max, I64) = 1 ;
   if (index) *index = kh->max ;
   
   if (kh->max == kh->psize-1) doubleTable (kh) ;
@@ -197,10 +192,14 @@ char* kmerHashSeq (KmerHash *kh, I64 i, char *buf) // user must provide buf to b
   else return seqUnpack (kh->seqPack, (U8*)packseq(kh,i), buf, 0, kh->len) ;
 }
 
+#ifdef ONEIO
+
+#include "ONElib.h"
+
 static char *schemaText =
   "P 5 khash                 KMER HASH\n"
-  "D t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
-  "O S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
+  "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
+  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
   "D L 1 8 INT_LIST          locations in the table\n"
   ".\n" ;
 
@@ -217,7 +216,7 @@ bool kmerHashWriteOneFile (KmerHash *kh, OneFile *of)
   U64 *dna = packseq(kh,1) ;
   while (total > chunk)
     { oneWriteLineDNA2bit (of, 'S', chunk << 5, (U8*)dna) ; dna += chunk ; total -= chunk ; }
-  oneWriteLineDNA2bit (of, 'S', total << 5, (U8*)dna) ;
+  if (total) oneWriteLineDNA2bit (of, 'S', total << 5, (U8*)dna) ;
   
   // next find the locations of all the kmers and write them
   I64 i, size = 1 << kh->dim, *loc0 = new(kh->max,I64), *loc = loc0 ;
@@ -225,27 +224,18 @@ bool kmerHashWriteOneFile (KmerHash *kh, OneFile *of)
   // similarly chunk the location buffer
   total = kh->max ;
   while (total > chunk) { oneWriteLine (of, 'L', chunk, loc) ; loc += chunk ; total -= chunk ; }
-  oneWriteLine (of, 'L', total, loc) ;
+  if (total) oneWriteLine (of, 'L', total, loc) ;
   newFree (loc0, kh->max, I64) ;
-
-  // finally, write the chunked counts
-  total = kh->max ;
-  loc = arrp (kh->count, 0, I64) ;
-  while (total > chunk) { oneWriteLine (of, 'C', chunk, loc) ; loc += chunk ; total -= chunk ; }
-  oneWriteLine (of, 'C', total, loc) ;
   
   return true ;
 }
 
 KmerHash *kmerHashReadOneFile (OneFile *of)
 {
-  if (!of || !oneFileCheckSchemaText (of, schemaText) || !oneGoto (of, 'S', 0))
-    die ("failed to read khash file") ;
-
-  while (of->lineType != 't' && oneReadLine (of)) ;
-  if (of->lineType != 't') die ("failed to find 't' line in khash file") ;
+  if (!of || !oneFileCheckSchemaText (of, schemaText) || !oneGoto (of, 't', 1)) return 0 ;
+  
+  oneReadLine (of) ;
   KmerHash *kh = kmerHashCreate (1 << oneInt(of,2), oneInt(of,1)) ;
-  if (!kh) die ("failed to create KmerHash") ;
   kh->max = oneInt(of,0) ;
 
   // read the DNA, maybe in chunks - assume they are at least multiple of 4bp, i.e. full bytes
@@ -265,18 +255,10 @@ KmerHash *kmerHashReadOneFile (OneFile *of)
     }
   if (x != kh->max) die ("wrong number of locations read in kmerhash") ;
 
-  // read the counts
-  array (kh->count, kh->max, I64) = 0 ; // ensure array is big enough
-  x = 0 ;
-  while (of->lineType == 'C')
-    { memcpy (arrp(kh->count, x, I64), oneIntList(of), oneLen(of)*sizeof(I64)) ;
-      x += oneLen(of) ;
-      oneReadLine(of) ;
-    }
-  if (x != kh->max) die ("wrong number of counts read in kmerhash") ;
-
   return kh ;
 }
+
+#endif // ONE_DEFINED
 
 /******************************************************************************************/
 
@@ -344,6 +326,6 @@ int main (int argc, char *argv[])
   newFree (data, count*len, char) ;
 }
 
-#endif
+#endif // TEST
 
 /*********** end of file ***********/

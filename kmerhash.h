@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  5 12:31 2025 (rd109)
+ * Last edited: Mar 16 22:07 2025 (rd109)
  * Created: Tue Sep  3 19:39:02 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -34,7 +34,6 @@ typedef struct {
   U64      finds ;   // stats: number of finds
   U64      deltas ;  // stats: number of deltas (not in remapping)
   SeqPack *seqPack ; // for binary packing/unpacking
-  Array    count ;   // of I64 (fast ONEcode read/write) 
 } KmerHash ;
 
 KmerHash *kmerHashCreate (U64 initialSize, int len) ;
@@ -51,11 +50,11 @@ bool      kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) ; // true if fou
 
 char*     kmerHashSeq (KmerHash *kh, I64 i, char *buf) ; // retrieve i'th sequence (rev-comp if i < 0)
                                                          // buf can be 0, but then not thread-safe
-#define   kmerHashMax(kh)  ((kh)->max)        // count of stored kmers
+#define   kmerHashMax(kh)  ((kh)->max)      // number of stored kmers
 
-#include "ONElib.h"
-
+#ifdef ONE_DEFINED
 bool      kmerHashWriteOneFile (KmerHash *kh, OneFile *of) ;
 KmerHash *kmerHashReadOneFile (OneFile *of) ;
+#endif
 
 /*********** end of file ***********/
