@@ -227,17 +227,17 @@ void timeUpdate (FILE *f)
     { secs = rNew.ru_utime.tv_sec - rOld.ru_utime.tv_sec ;
       usecs =  rNew.ru_utime.tv_usec - rOld.ru_utime.tv_usec ;
       if (usecs < 0) { usecs += 1000000 ; secs -= 1 ; }
-      fprintf (f, "user\t%d.%06d", secs, usecs) ;
+      fprintf (f, "user %d.%06d", secs, usecs) ;
       secs = rNew.ru_stime.tv_sec - rOld.ru_stime.tv_sec ;
       usecs =  rNew.ru_stime.tv_usec - rOld.ru_stime.tv_usec ;
       if (usecs < 0) { usecs += 1000000 ; secs -= 1 ; }
-      fprintf (f, "\tsystem\t%d.%06d", secs, usecs) ;
+      fprintf (f, "  system %d.%06d", secs, usecs) ;
       secs = tNew.tv_sec - tOld.tv_sec ;
       usecs =  tNew.tv_usec - tOld.tv_usec ;
       if (usecs < 0) { usecs += 1000000 ; secs -= 1 ; }
-      fprintf (f, "\telapsed %d.%06d", secs, usecs) ;
-      fprintf (f, "\talloc_max %lu", maxAllocated/1000000) ;
-      fprintf (f, "\tmax_RSS\t%ld", rNew.ru_maxrss - rOld.ru_maxrss) ;
+      fprintf (f, "  elapsed %d.%06d", secs, usecs) ;
+      fprintf (f, "  alloc_max %.3f", maxAllocated/(1.*(1<<30))) ;
+      fprintf (f, "  max_RSS %ld", rNew.ru_maxrss - rOld.ru_maxrss) ;
       fputc ('\n', f) ;
     }
   else
