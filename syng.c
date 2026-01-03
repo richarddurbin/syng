@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 27 21:30 2025 (rd109)
+ * Last edited: Nov 11 22:59 2025 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -121,10 +121,10 @@ static void *threadProcessPaths (void* arg) // read in paths, make sequences if 
 	    SyngBWTpath *sbp = syngBWTpathStartOld (ti->sbwt, sp->sync, oneInt(ti->ofIn,2)) ;
 //	    printf ("starting path %d length %d with sync %d count %d at %d\n", i, (int)si->nSync, (int)sp->sync, (int)oneInt(ti->ofIn,2), (int)sp->pos) ;
 	    for (j = 1 ; j < si->nSync ; ++j)
-	      if (syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos)) sp[j].pos += sp[j-1].pos ;
-//		{ sp[j].pos += sp[j-1].pos ;
-//		  printf (" %d", (int)sp[j].sync) ;
-//		}
+	      if (syngBWTpathNext (sbp, &sp[j].sync, &sp[j].pos))
+		{ sp[j].pos += sp[j-1].pos ;
+//		  printf (" %d:%d", (int)sp[j].sync, (int)sp[j].pos) ;
+		}
 	      else
 		die ("failed GBWT extension: seq %d count %d max %d from sync %d pos %d",
 		     i, j, si->nSync, sp[j-1].sync, sp[j-1].pos) ;
@@ -150,7 +150,8 @@ static void *threadProcessPaths (void* arg) // read in paths, make sequences if 
 	    break ;
 	  case 'Y':
 	    if (si->nSync && oneLen(ti->ofIn) != si->len - (sp[si->nSync-1].pos + ti->kh->len))
-	      die ("Y error in threadProcessPaths %d", i) ;
+	      die ("Y error in threadProcessPaths %d nSync %d oneLen %d si->len %d pos %d len %d",
+		   i, si->nSync, oneLen(ti->ofIn), si->len, sp[si->nSync-1].pos, ti->kh->len) ;
 	    dna = oneDNAchar (ti->ofIn) ;
 	    int endLen = oneLen(ti->ofIn) ;
 	    for (j = 0 ; j < endLen ; ++j) seq[si->len-endLen+j] = dna2index4Conv[dna[j]] ;
@@ -279,6 +280,7 @@ static char usage[] =
   "  -writeGBWT             : write a .1gbwt file (nodes, edges and paths in GBWT form)\n"
   "  -writeSeq              : write a .1seq file (paths converted back to sequences)\n"
   "  -outputEnds            : write the non-syncmer ends of path sequences as X,Y lines\n"
+  "  -FM                    : convert input GBWT to FM before processing\n"
   //  "  -outputNames           : write the names of path sequences as I lines\n"
   "possible inputs are:\n"
   "  <sequence file>        : any of fasta[.gz], fastq[.gz], BAM/CRAM/SAM, .1seq\n"
@@ -300,7 +302,8 @@ int main (int argc, char *argv[])
   OneFile    *ofK = 0, *ofNewK = 0, *ofOut = 0 ;
   SyngBWT    *gbwtOut = 0 ;
   SyncmerParams params = syncmerParamsDefault () ;
-  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = false, isOutputNames = false ;
+  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = false, isFM = false ;
+  bool        isSort = false ;
   I64         i, j, k ; // general purpose indices
   
   timeUpdate (0) ;
@@ -391,7 +394,7 @@ int main (int argc, char *argv[])
 	argc -= 2 ; argv += 2 ;
       }
     else if (!strcmp (*argv, "-outputEnds")) { isOutputEnds = true ; --argc ; ++argv ; }
-    else if (!strcmp (*argv, "-outputNames")) { isOutputNames = true ; --argc ; ++argv ; }
+    else if (!strcmp (*argv, "-FM")) { isFM = true ; --argc ; ++argv ; }
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   fprintf (stdout, "k, w, seed are %d %d %d\n", params.k, params.w, params.seed) ;
@@ -444,7 +447,9 @@ int main (int argc, char *argv[])
 	  oneReadLine (ofIn) ; if (ofIn->lineType == 'h') syncmerParamsCheck (ofIn, params) ;
 	  I64 z ;
 	  if (oneStats (ofIn, 'Z', &z, 0, 0) && z) // must have a GBWT
-	    threadInfo->sbwt = syngBWTread (ofIn) ;
+	    { threadInfo->sbwt = syngBWTread (ofIn) ;
+	      if (isFM) syngBWTtoFM (threadInfo->sbwt) ;
+	    }
 	  for (i = 0 ; i < nThread ; ++i)
 	    { threadInfo[i].ofIn = ofIn+i ;
 	      oneGoto (ofIn+i, 'P', 1 + (nPath * i) / nThread) ;
@@ -526,7 +531,8 @@ int main (int argc, char *argv[])
 	      char *seq = arrp(ti->seq, 0, char) ;
 	      SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
 	      for (j = 0 ; j < arrayMax (ti->seqInfo) ; ++j, ++nSeq)
-		{ if (outType == SEQ)
+		{ totSync += arrp(ti->seqInfo, j, SeqInfo)->nSync ;
+		  if (outType == SEQ)
 		    oneWriteLine (ofOut, 'S', arrp(ti->seqInfo, j, SeqInfo)->len, seq) ;
 		  else if (outType == PATH || outType == GBWT)
 		    { I64 nSync = arrp(ti->seqInfo, j, SeqInfo)->nSync ; // number of syncs

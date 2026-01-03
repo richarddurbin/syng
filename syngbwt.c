@@ -5,13 +5,11 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 30 22:31 2025 (rd109)
+ * Last edited: Nov 23 08:54 2025 (rd109)
+ * * Apr  5 11:38 2025 (rd109): added FM, threaded read and write, sort on write
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
  */
-
-// 250104: I need to change inOff and outOff to be I32, and get rid of packOff and packed
-// and store the offsets in sc.
 
 #include "syng.h"
 
@@ -24,7 +22,19 @@ typedef struct {
 typedef struct {
   I32 sync ;
   I32 count ;
-} SyncCount ;
+} SyncCount ;  // also used for run-length encoded GBWT
+
+typedef struct {
+  bool         is2 : 1 ;
+  unsigned int cum : 31 ;
+  union {
+    struct { unsigned int index1 : 6  ; unsigned int occ1 : 26 ; } ;
+    struct { unsigned int index2 : 16 ; unsigned int occ2 : 16 ; } ; 
+  } fm ;
+} FM ;         // alternate used for FM-encoded GBWT if syngBWT->isFM
+
+static inline I32 fmIndex (FM *f) { return (I32) (f->is2 ? f->fm.index2 : f->fm.index1) ; }
+static inline I32 fmOcc (FM *f)   { return (I32) (f->is2 ? f->fm.occ2 : f->fm.occ1) ; }
 
 typedef struct {
   I32        inN, outN ;   // how many distinct syncs coming in, going out
@@ -46,6 +56,9 @@ typedef union {
 #define NODE_SIMPLE     0x01
 #define NODE_COMPLEX    0x02
 #define NODE_PACKED     0x04 // not used yet, but packing/unpacking code is below
+#define NODE_SKIP8	0x08
+#define NODE_SKIP16	0x10
+#define NODE_SKIP32	0x20
 
 static Node nodeCreate (I32 k, I32 in, I32 out, I32 inOff,I32 outOff) ;
 static I32  nodePack (Node *n, U8 *status) ;   // returns new size in bytes
@@ -137,7 +150,7 @@ static void startCountAdd (SyngBWT *sb, I32 k, I32 count)
 
 // #define DEBUG_ADD // use for detailed debugging - very verbose!
 
-static void nodePrint (Node *n, U8 *s)
+static void nodePrint (Node *n, U8 *s, bool isFM)
 {
   if (!*s)
     printf ("\n  empty node\n") ;
@@ -154,14 +167,24 @@ static void nodePrint (Node *n, U8 *s)
       SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
       I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
       printf ("\n    in:") ;
-      for (i=0; i<cn->inN; ++i) printf(" %d [%d] (%d)", inList[i].sync,inList[i].count,inOffList[i]) ;
+      for (i=0; i<cn->inN; ++i) printf(" %d(%d) [%d]", inList[i].sync,inOffList[i],inList[i].count) ;
       printf ("\n    out:") ;
-      for (i=0; i<cn->outN; ++i) printf(" %d [%d] (%d)",outList[i].sync,outList[i].count,outOffList[i]) ;
-      printf ("\n    inG:") ;
-      for (i=0; i<cn->inG; ++i)	printf(" %d [%d]", inGBWT[i].sync, inGBWT[i].count) ;
-      printf ("\n    outG:") ;
-      for (i=0; i<cn->outG; ++i) printf(" %d [%d]", outGBWT[i].sync, outGBWT[i].count) ;
-      putchar ('\n') ;
+      for (i=0; i<cn->outN; ++i) printf(" %d(%d) [%d]",outList[i].sync,outOffList[i],outList[i].count) ;
+      if (isFM)
+	{ FM *inFM = (FM*)inGBWT, *outFM = (FM*)outGBWT ;
+	  printf ("\n    inFM:") ;
+	  for (i=0; i<cn->inG; ++i)  printf(" %d [%d,%d]",fmIndex(inFM+i),inFM[i].cum,fmOcc(inFM+i)) ;
+	  printf ("\n    outFM:") ;
+	  for (i=0; i<cn->outG; ++i) printf(" %d [%d,%d]",fmIndex(outFM+i),outFM[i].cum,fmOcc(outFM+i)) ;
+	  putchar ('\n') ;
+	}
+      else
+	{ printf ("\n    inG:") ;
+	  for (i=0; i<cn->inG; ++i)  printf(" %d [%d]", inGBWT[i].sync, inGBWT[i].count) ;
+	  printf ("\n    outG:") ;
+	  for (i=0; i<cn->outG; ++i) printf(" %d [%d]", outGBWT[i].sync, outGBWT[i].count) ;
+	  putchar ('\n') ;
+	}
     }
   else die ("\n  nodePrint: unrecognisable node type") ;
   fflush (stdout) ;
@@ -173,13 +196,15 @@ static void syncPrint (SyngBWT *sb, I32 k)
   if (k < 0) k = -k ;
   Node *n = arrayp(sb->node, k, Node) ;
   U8   *s = arrayp(sb->status, k, U8) ;
-  nodePrint (n, s) ;
+  nodePrint (n, s, sb->isFM) ;
 }
 
 // #define TRACE_NODE 352
 
 static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I32 outOff) 
 {
+  if (sb->isFM) die ("syngBWTadd() can't operate in FM mode") ;
+    
 #ifdef DEBUG_ADD  
   printf ("adding %d %d in %d %d out %d %d - ", k, j, in, inOff, out, outOff) ;
 #endif
@@ -207,7 +232,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
       printf ("new simple node - jNext 0\n") ;
 #endif
 #ifdef TRACE_NODE  
-      if (k == TRACE_NODE) { printf (" - new simple node") ; nodePrint (n, s) ; }
+      if (k == TRACE_NODE) { printf (" - new simple node") ; nodePrint (n, s, sb->isFM) ; }
 #endif
       return 0 ;
     }
@@ -230,7 +255,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 	  printf (" jNext %d\n", j) ;
 #endif
 #ifdef TRACE_NODE
-	  if (k == TRACE_NODE) { printf (" - update simple node") ; nodePrint (n, s) ; }
+	  if (k == TRACE_NODE) { printf (" - update simple node") ; nodePrint (n, s, sb->isFM) ; }
 #endif
 	  return j ;
 	}
@@ -251,7 +276,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
 	  printf ("unpacking simple node - ") ;
 #endif
 #ifdef TRACE_NODE  
-	  if (k == TRACE_NODE) { printf (" - unpack simple node") ; nodePrint (n,s) ; }
+	  if (k == TRACE_NODE) { printf (" - unpack simple node") ; nodePrint (n,s, sb->isFM) ; }
 #endif
 	}
     }
@@ -313,7 +338,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
       ++g ;
     }
   if (g-g0 >= (isPositive ? cn->outG : cn->inG))
-    { nodePrint (n, s) ;
+    { nodePrint (n, s, sb->isFM) ;
       die ("addNode %c outG %d inG %d g-g0 %d target %d pre %d j %d jNext %d sumCount %d g[-1].count %d",
 	 isPositive?'+':'-',cn->outG,cn->inG,(int)(g-g0), target, pre, j, jNext, sumCount, g[-1].count) ;
     }
@@ -422,7 +447,7 @@ static I32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 out, I3
   printf (" - jNext %d\n", jNext) ;
 #endif
 #ifdef TRACE_NODE  
-  if (k == TRACE_NODE) { printf ("  jNext %d", jNext) ; nodePrint (n, s) ; }
+  if (k == TRACE_NODE) { printf ("  jNext %d", jNext) ; nodePrint (n, s, sb->isFM) ; }
 #endif
 
   return jNext ;
@@ -461,48 +486,135 @@ static I32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, I32 inOff, I32 j, I32 *out, 
 
   SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
   SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+  FM  *inFM = (FM*)inGBWT, *outFM = (FM*)outGBWT ;
   I32 *inOffList = (I32*) (outGBWT + cn->outG), *outOffList = inOffList + cn->inN ;
+  I32  jNext ; // will hold return value
 
   if (isPositive) // find in within inList
-    { int k = 0 ; // k is index of in within inList
-      while (k < cn->inN && (inList[k].sync != in || inOffList[k] != inOff))
-	j += inList[k++].count ;
-      if (k == cn->inN) die ("syngBWTnext + %d failed to find %d in inList", k, in) ;
-	
-      SyncCount *g0 = outGBWT, *g = g0 ;  // start of the GBWT to insert into
-      I32 *counts = new0 (cn->outN, I32) ;
-      while (g->count <= j)                // find GBWT block for j
-	{ j -= g->count ;
-	  counts[g->sync] += g->count ;
-	  ++g ;
+    { int x = 0 ; // x is index of in within inList
+      while (x < cn->inN && (inList[x].sync != in || inOffList[x] != inOff))
+	j += inList[x++].count ;
+      if (x == cn->inN) die ("syngBWTnext +%d failed to find %d in inList", k, in) ;
+
+      if (sb->isFM) 
+	{ int i0 = 0, i1 = cn->outG, i ;
+	  while (i1 > i0+1) // binary search
+	    { i = (i0+i1)/2 ;
+	      if (outFM[i].cum <= j) i0 = i ;
+	      else i1 = i ;
+	    }
+	  int index = fmIndex(outFM+i0) ;
+	  *out = outList[index].sync ; *outOff = outOffList[index] ;
+	  jNext = j - outFM[i0].cum + fmOcc(outFM+i0) ;
 	}
-      if (g-g0 >= cn->outG) die ("error in nextNode") ;
-      *out = outList[g->sync].sync ;
-      *outOff = outOffList[g->sync] ;
-      I32 jNext = j + counts[g->sync] ;
-      newFree (counts, cn->outN, I32) ;
-      return jNext ;
+      else
+	{ SyncCount *g0 = outGBWT, *g = g0 ;  // start of the GBWT to search into
+	  I32 *counts = new0 (cn->outN, I32) ;
+	  int jStart = j ;
+	  while (g->count <= j)                // find GBWT block for j
+	    { j -= g->count ;
+	      counts[g->sync] += g->count ;
+	      ++g ;
+	    }
+	  if (g-g0 >= cn->outG) die ("error in nextNode") ;
+	  *out = outList[g->sync].sync ;
+	  *outOff = outOffList[g->sync] ;
+	  jNext = j + counts[g->sync] ;
+	  newFree (counts, cn->outN, I32) ;
+	}
     }
   else
-    { int k = 0 ; // k is index of in within outList
-      while (k < cn->outN && (outList[k].sync != -in || outOffList[k] != inOff))
-	j += outList[k++].count ;
-      if (k == cn->outN) die ("syngBWTnext - %d failed to find %d in outList", k, in) ;
-	
-      SyncCount *g0 = inGBWT, *g = g0 ;  // start of the GBWT to insert into
-      I32 *counts = new0(cn->inN,I32) ;
-      while (g->count <= j)                // find GBWT block for j
-	{ j -= g->count ;
-	  counts[g->sync] += g->count ;
-	  ++g ;
+    { int x = 0 ; // x is index of in within outList
+      while (x < cn->outN && (outList[x].sync != -in || outOffList[x] != inOff))
+	j += outList[x++].count ;
+      if (x == cn->outN) die ("syngBWTnext -%d failed to find %d in outList", k, in) ;
+
+      if (sb->isFM)
+	{ int i0 = 0, i1 = cn->inG, i ;
+	  while (i1 > i0+1) // binary search
+	    { i = (i0+i1)/2 ;
+	      if (inFM[i].cum <= j) i0 = i ;
+	      else i1 = i ;
+	    }
+	  int index = fmIndex(inFM+i0) ;
+	  *out = -inList[index].sync ; *outOff = inOffList[index] ;
+	  jNext = j - inFM[i0].cum + fmOcc(inFM+i0) ;
 	}
-      if (g-g0 >= cn->inG) die ("error in nextNode") ;
-      *out = -inList[g->sync].sync ;
-      *outOff = inOffList[g->sync] ;
-      I32 jNext = j + counts[g->sync] ;
-      newFree (counts, cn->outN, I32) ;
-      return jNext ;
+      else
+	{ SyncCount *g0 = inGBWT, *g = g0 ;  // start of the GBWT to insert into
+	  I32 *counts = new0(cn->inN,I32) ;
+	  int jStart = j ;
+	  while (g->count <= j)                // find GBWT block for j
+	    { j -= g->count ;
+	      counts[g->sync] += g->count ;
+	      ++g ;
+	    }
+	  if (g-g0 >= cn->inG) die ("error in nextNode") ;
+	  *out = -inList[g->sync].sync ;
+	  *outOff = inOffList[g->sync] ;
+	  jNext = j + counts[g->sync] ;
+	  newFree (counts, cn->outN, I32) ;
+	}
     }
+
+  return jNext ;
+}
+
+/*******************************************************/
+
+#define CHECK_FM
+
+void syngBWTtoFM (SyngBWT *sb) // convert BWT information to FM mode
+{
+  assert (sizeof(FM) == sizeof(SyncCount)) ; // we need this!
+  if (sb->isFM) return ; // don't try to do it again!
+  sb->isFM = true ;
+  int i, j ;
+  Array occ = arrayCreate (1024, I32) ;
+  for (i = 1 ; i < arrayMax (sb->node) ; ++i)
+    { Node n = arr(sb->node, i, Node) ;
+      U8   s = arr(sb->status, i, U8) ;
+      if (!s || (s & NODE_SIMPLE)) continue ; // nothing needed
+      if (s & NODE_PACKED) nodeUnpack (&n, &s) ;
+      ComplexNode *cn = &(n.complex) ;
+ #ifdef CHECK_FM     
+      if (cn->inN >= (1 << 16) || cn->outN >= (1 << 16))
+	die ("inN %d %x outN %d %x", cn->inN, cn->inN, cn->outN, cn->outN) ;
+ #endif
+
+      SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+      SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
+      FM        *inFM = (FM*) inGBWT, *outFM = (FM*) outGBWT ;  // will replace in place
+
+      U32 cum = 0 ; array(occ,cn->inN-1,I32) = 0 ; memset (arrp(occ,0,I32), 0, cn->inN*sizeof(I32)) ;
+      for (j = 0 ; j < cn->inG ; ++j, ++inGBWT, ++inFM)
+	{ U32 k = inGBWT->sync, bit = inGBWT->count ;
+	  if (k < 64) { inFM->is2 = false ; inFM->fm.index1 = k ; inFM->fm.occ1 = arr(occ,k,I32) ; }
+	  else        { inFM->is2 = true  ; inFM->fm.index2 = k ; inFM->fm.occ2 = arr(occ,k,I32) ; }
+	  inFM->cum = cum ; cum += bit ; arr(occ,k,I32) += bit ;
+	}
+ #ifdef CHECK_FM     
+      for (j = 0 ; j < 64 && j < cn->inN ; ++j)
+	if (arr(occ,j,I32) >= (1 << 26)) die ("occ[%d] %d %x", j, arr(occ,j,I32), arr(occ,j,I32)) ;
+      for (j = 64 ; j < cn->inN ; ++j)
+	if (arr(occ,j,I32) >= (1 << 16)) die ("occ[%d] %d %x", j, arr(occ,j,I32), arr(occ,j,I32)) ;
+ #endif
+
+      cum = 0 ; array(occ,cn->outN-1,I32) = 0 ; memset (arrp(occ,0,I32), 0, cn->outN*sizeof(I32)) ;
+      for (j = 0 ; j < cn->outG ; ++j, ++outGBWT, ++outFM)
+	{ U32 k = outGBWT->sync, bit = outGBWT->count ;
+	  if (k < 64) { outFM->is2 = false ; outFM->fm.index1 = k ; outFM->fm.occ1 = arr(occ,k,I32) ; }
+	  else        { outFM->is2 = true ;  outFM->fm.index2 = k ; outFM->fm.occ2 = arr(occ,k,I32) ; }
+	  outFM->cum = cum ; cum += bit ; arr(occ,k,I32) += bit ;
+	}
+ #ifdef CHECK_FM     
+      for (j = 0 ; j < 64 && j < cn->outN ; ++j)
+	if (arr(occ,j,I32) >= (1 << 26)) die ("occ[%d] %d %x", j, arr(occ,j,I32), arr(occ,j,I32)) ;
+      for (j = 64 ; j < cn->outN ; ++j)
+	if (arr(occ,j,I32) >= (1 << 16)) die ("occ[%d] %d %x", j, arr(occ,j,I32), arr(occ,j,I32)) ;
+ #endif
+    }
+  arrayDestroy (occ) ;
 }
 
 /*******************************************************/
@@ -570,16 +682,8 @@ bool syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *offset)
     return false ;
 }
 
-/************* interface to match a pattern *******************/
-
-SyngBWTpath *syngBWTmatchStart (SyngBWT *sb, I32 startNode)
-{
-  //  SyngBWTmatch *sbp = pathCreate (sb, startNode) ;
-  return 0 ;
-}
-
 /****************************************************************/
-/***************** read and write the SyngBWT *******************/
+/********************* write the SyngBWT ************************/
 
 void syngBWTwrite (OneFile *of, SyngBWT *sb)
 {
@@ -637,30 +741,38 @@ void syngBWTwrite (OneFile *of, SyngBWT *sb)
   newFree (buf, bufSize, I64) ;
 }
 
-SyngBWT *syngBWTread (OneFile *of)
+/****************** and read it - thread this for speed *******************/
+
+typedef struct {
+  OneFile *of ;
+  SyngBWT *sb ;
+  U32      v1, vn ; // first V line to read, and last
+  I64      eTotal ;
+} ReadThread ;
+
+static void *threadRead (void *arg)
 {
-  I64 nv, EMax, eMax, BMax, bMax ;
-  if (!oneStats (of, 'V', &nv, 0, 0) || !nv || !oneGoto (of, 'V', 1))
-    die ("syngBWTread: can't locate to Vertex objects in .1gbwt file") ;
+  ReadThread *rt = (ReadThread*)arg ;
+  SyngBWT    *sb = rt->sb ;
+  OneFile    *of = rt->of ;
+  U32 i, j ;
+  I64 EMax, eMax, BMax, bMax ;
+
   if (!oneStatsContains (of, 'V', 'E', &EMax, 0) ||  // max number of E lines
       !oneStatsContains (of, 'V', 'e', &eMax, 0) ||  // max number of e lines
-      !oneStatsContains (of, 'V', 'B', 0, &BMax) ||  // longest B line (in fact longest sum of B lines)
-      !oneStatsContains (of, 'V', 'b', 0, &bMax))    // longest b line
+      !oneStatsContains (of, 'V', 'B', 0, &BMax) ||  // longest sum of B lines
+      !oneStatsContains (of, 'V', 'b', 0, &bMax))    // longest sum of b lines
     die ("syngBWTread: failed to find max list lengths for vertices") ;
   SyncCount *eIn = new (EMax, SyncCount), *eOut = new (eMax, SyncCount) ;
   SyncCount *gIn = new (bMax, SyncCount), *gOut = new (BMax, SyncCount) ;
-  I32       *inOff = new (EMax, I32), *outOff = new (eMax, I32) ;
-  
-  oneReadLine (of) ;
-  int fixedLen = oneInt(of,0) ;
-  SyngBWT *sb = syngBWTcreate (fixedLen, nv+1) ;
-  if (!sb) die ("failed to create syngBWT of size %lld", nv+1) ;
+  I32       *inOff = new (EMax, I32),     *outOff = new (eMax, I32) ;
 
-  I64 eTotal = 0 ;
-  int i,j ;
-  for (i = 1 ; i <= nv ; ++i)
-    { if (oneInt(of,0) != fixedLen)
-	die ("syngBWTread can't yet handle variable length nodes %lld != %d", oneInt(of,0), fixedLen) ;
+  if (!oneGoto (of, 'V', rt->v1)) die ("failed to locate to V line %u", rt->v1) ;
+  oneReadLine (of) ; // read the first V line
+  rt->eTotal = 0 ;
+  for (i = rt->v1 ; i <= rt->vn ; ++i)
+    { if (oneInt(of,0) != sb->fixedLen)
+	die ("syngBWTread node length %lld != expected %d", oneInt(of,0), sb->fixedLen) ;
       Node *n = arrayp(sb->node, i, Node) ;
       U8   *s = arrayp(sb->status, i, U8) ;
       int   inN = 0, outN = 0, inG = 0, outG = 0 ;
@@ -671,11 +783,11 @@ SyngBWT *syngBWTread (OneFile *of)
 	  case 'E':
 	    eIn[inN].sync = oneInt(of,0) ; inOff[inN] = oneInt(of,1) ; eIn[inN].count = oneInt(of,2) ;
 	    if (eIn[inN].sync == 0) startCountAdd (sb, i, eIn[inN].count) ; // start node
-	    ++inN ; ++eTotal ; break ;
+	    ++inN ; ++rt->eTotal ; break ;
 	  case 'e':
 	    eOut[outN].sync = oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
 	    if (eOut[outN].sync == 0) startCountAdd (sb, -i, eOut[outN].count) ; // start node
-	    ++outN ; ++eTotal ; break ;
+	    ++outN ; ++rt->eTotal ; break ;
 	  case 'B':
 	    oil = oneIntList(of) ;
 	    outG = oneLen(of) ; for (j = 0 ; j < outG ; ++j) gOut[j].sync = oil[j] ;
@@ -719,17 +831,47 @@ SyngBWT *syngBWTread (OneFile *of)
 	  memcpy (ip, outOff, outN*sizeof(I32)) ;
 	}
 #ifdef TRACE_NODE
-      if (i == TRACE_NODE) { printf ("syngBWTread %d", TRACE_NODE) ; nodePrint (n, s) ; }
+      if (i == TRACE_NODE) { printf ("syngBWTread %d", TRACE_NODE) ; nodePrint (n, s, false) ; }
 #endif
     }
-
+  
   newFree (eIn, EMax, SyncCount) ; newFree (eOut, eMax, SyncCount) ;
   newFree (gIn, bMax, SyncCount) ; newFree (gOut, BMax, SyncCount) ;
   newFree (inOff, EMax, I32) ; newFree (outOff, eMax, I32) ;
+  return 0 ;
+}
 
-  fprintf (stdout, "read GBWT with %lld vertices and %lld edges\n", nv, eTotal) ;
-  timeUpdate (stdout) ;
+
+SyngBWT *syngBWTread (OneFile *of)
+{
+  I64 i, nv ;
+  if (!oneStats (of, 'V', &nv, 0, 0) || !nv || !oneGoto (of, 'V', 1))
+    die ("syngBWTread: no Vertex objects in .1gbwt file or can't locate to them") ;
   
+  oneReadLine (of) ;	// we are just before the 1st V line
+  int fixedLen = oneInt(of,0) ;
+  SyngBWT *sb = syngBWTcreate (fixedLen, nv+1) ;
+  if (!sb) die ("failed to create syngBWT of size %lld", nv+1) ;
+
+  int         nThread = of->share ; if (!nThread) nThread = 1 ;
+  pthread_t  *threads = new (nThread, pthread_t) ;
+  ReadThread *rt = new0 (nThread, ReadThread) ;
+  for (i = 0 ; i < nThread ; ++i)
+    { rt[i].sb = sb ; rt[i].of = of + i ;
+      rt[i].v1 = 1 + (i*nv) / nThread ;
+      rt[i].vn = ((i+1)*nv) / nThread ;
+      pthread_create (&threads[i], 0, threadRead, &rt[i]) ;
+    }
+  I64 eTotal = 0 ;
+  for (i = 0 ; i < nThread ; ++i)
+    { pthread_join (threads[i], 0) ; // wait for the threads to complete
+      eTotal += rt[i].eTotal ;
+    }
+  fprintf (stdout, "read GBWT with %lld vertices and %lld edges\n", nv, eTotal) ;
+
+  newFree (threads, nThread, pthread_t) ;
+  newFree (rt, nThread, ReadThread) ;
+  timeUpdate (stdout) ;
   return sb ;
 }
 
@@ -737,36 +879,60 @@ SyngBWT *syngBWTread (OneFile *of)
 
 void syngBWTstat (SyngBWT *sb)
 {
-  int nSimple = 0, maxTotal = 0 ;
+  int N = arrayMax(sb->node) ;
+  int nSimple = 0, maxTotal = 0, nBlank ;
   Array eHist = arrayCreate (1024, int) ;
   Array cHist = arrayCreate (1024, int) ;
+  Array gHist = arrayCreate (1024, int) ;
   int i, j ;
-  for (i = 1 ; i < arrayMax(sb->node) ; ++i)
+  I64 eSum = 0, eTotal = 0 ;
+  for (i = 1 ; i < N ; ++i)
     { Node n = arr(sb->node, i, Node) ;
       U8   s = arr(sb->status, i, U8) ;
-      if (!s) continue ; // must come after we have written the node
+      if (!s) { ++nBlank ; continue ; }
       if (s & NODE_SIMPLE) ++nSimple ;
       else
 	{ if (s & NODE_PACKED) nodeUnpack (&n, &s) ;
 	  ComplexNode *cn = &(n.complex) ;
 	  SyncCount *inList = cn->sc, *outList = inList + cn->inN ;
+	  SyncCount *inGBWT = outList + cn->outN, *outGBWT = inGBWT + cn->inG ;
 
 	  int total = 0 ;
 	  ++array(eHist,cn->inN,int) ;
+	  ++array(gHist,cn->inG,int) ;
 	  for (j = 0 ; j < cn->inN ; ++j)
-	    { ++array(cHist,inList[j].count,int) ; total += inList[j].count ; }
+	    { ++array(cHist,inList[j].count,int) ;
+	      total += inList[j].count ;
+	      eSum += inList[j].count ;
+	      eTotal += inList[j].count * (j+1) ;
+	    }
 	  if (total > maxTotal) maxTotal = total ;
 
 	  total = 0 ;
 	  ++array(eHist,cn->outN,int) ;
+	  ++array(gHist,cn->outG,int) ;
 	  for (j = 0 ; j < cn->outN ; ++j)
-	    { ++array(cHist,outList[j].count,int) ; total += outList[j].count ; }
+	    { ++array(cHist,outList[j].count,int) ;
+	      total += outList[j].count ;
+	      eSum += outList[j].count ;
+	      eTotal += outList[j].count * (j+1) ;
+	    }
 	  if (total > maxTotal) maxTotal = total ;
 	}
     }
-  printf ("  %d nodes of which %d are simple\n", (int)arrayMax(sb->node), nSimple) ;
-  printf ("    max list %d max count %d maxTotal %d\n",
-	  (int)arrayMax(eHist), (int)arrayMax(cHist), maxTotal) ;
+  printf ("  %d nodes of which %d are blank, %d are simple, %d complex %.1f%%\n",
+	  N, nBlank, nSimple, N - nBlank - nSimple, (N-nBlank-nSimple)/(0.01*N)) ;
+  printf ("    max in or out edge list %d\n", (int)arrayMax(eHist)) ;
+  printf ("    max count of any one edge %d\n", (int)arrayMax(cHist)) ;
+  printf ("    max total paths through a node %d\n", maxTotal) ;
+  printf ("    expected list search time %.2f\n", eTotal / (1.0*eSum)) ;
+  printf ("    max size of GBWT\n", (int)arrayMax(gHist)) ;
+  int bit = 0 ;
+  printf ("edge list dbn\n") ;
+  for (i = 1 ; i < 20 ; ++i)
+    { printf ("    %2d %8d\n", i, arr(eHist, i, int)) ; bit += arr(eHist, i, int) ; }
+  int left = 0 ; while (i < arrayMax(eHist)) left += arr(eHist, i++, int) ; 
+  printf     ("   >20 %8d %8d\n", 2*(N-nBlank-nSimple)-bit, left) ;
   arrayDestroy (eHist) ; arrayDestroy (cHist) ;
 }
 
@@ -990,3 +1156,285 @@ int main (int argc, char *argv[])
 #endif // INTGET_TEST
 
 /************** end of file **************/
+
+#ifdef CONVERT_SERIAL
+
+void updateNodePass2 (Node *node, U8 *status, I32 x, I64 off, bool isIn)
+{
+  if (*status & NODE_SIMPLE)
+    { SimpleNode *sn = &(node->simple) ;
+      if (isIn)
+	{ if (!sn->inOff) { sn->inOff = off ; sn->inCount = 1 ; }
+	  else if (sn->inOff == off) ++sn->inCount ;
+	  else // convert to complex node
+	    { SimpleNode old = *sn ;
+	      ComplexNode *cn = &(node->complex) ;
+	      *status &= ~NODE_SIMPLE ;
+	      *status |= NODE_COMPLEX ;
+	      cn->inN = 2 ; cn->outN = 1 ;
+	      cn->sc = new0 (cn->inN + cn->outN + 2, SyncCount) ;
+	      cn->sc[0].sync = old.in ; cn->sc[1].sync = old.in, cn->sc[2].sync = old.out ;
+	      cn->sc[0].count = old.inCount ; cn->sc[1].count = 1 ; cn->sc[2].count = old.outCount ;
+	      I32 *ofs = (I32*)&cn->sc[3] ; ofs[0] = old.inOff ; ofs[1] = off ; ofs[2] = old.outOff ;
+	    }
+	}
+      else // isOut
+	{ if (!sn->outOff) { sn->outOff = off ; sn->outCount = 1 ; }
+	  else if (sn->outOff == off) ++sn->outCount ;
+	  else // convert to complex node
+	    { SimpleNode old = *sn ;
+	      ComplexNode *cn = &(node->complex) ;
+	      *status &= ~NODE_SIMPLE ;
+	      *status |= NODE_COMPLEX ;
+	      cn->inN = 1 ; cn->outN = 2 ;
+	      cn->sc = new0 (cn->inN + cn->outN + 2, SyncCount) ;
+	      cn->sc[0].sync = old.in ; cn->sc[1].sync = old.out, cn->sc[2].sync = old.out ;
+	      cn->sc[0].count = old.inCount ; cn->sc[1].count = old.outCount ; cn->sc[2].count = 1 ;
+	      I32 *ofs = (I32*)&cn->sc[3] ; ofs[0] = old.inOff ; ofs[1] = old.outOff ; ofs[2] = off ;
+	    }
+	}
+    }
+  else if (*status & NODE_COMPLEX)
+    { ComplexNode *cn = &(node->complex) ;
+      if (isIn)
+	{ SyncCount *scIn = cn->sc ;
+	  I32       *scInOff = (I32*)(scIn + cn->inN + cn->outN) ;
+	  int i ;
+	  for (i = 0 ; i < cn->inN ; ++i)
+	    if (scIn[i].sync == x && (!scInOff[i] || scInOff[i] == off)) break ;
+	  if (i < cn->inN) // found
+	    { ++scIn[i].count ; scInOff[i] = off ; }
+	  else // should be rare - have to extend the array
+	    { SyncCount *oldSc = cn->sc, *old = oldSc ;
+	      scIn = cn->sc = new0 (cn->inN+1 + cn->outN + (cn->inN+cn->outN+2)/2, SyncCount) ;
+	      memcpy (scIn, old, cn->inN*sizeof(SyncCount)) ; scIn += cn->inN ; old += cn->inN ;
+	      scIn->sync = x ; scIn->count = 1 ; ++scIn ;
+	      memcpy (scIn, old, cn->outN*sizeof(SyncCount)) ; scIn += cn->outN ; old += cn->outN ;
+	      I32 *iIn = (I32*)scIn, *iold = (I32*)old ;
+	      memcpy (iIn, iold, cn->inN*sizeof(I32)) ; iIn += cn->inN ; iold += cn->inN ;
+	      *iIn++ = off ;
+	      memcpy (iIn, iold, cn->outN*sizeof(I32)) ;
+	      newFree (oldSc, cn->inN + cn->outN + (cn->inN+cn->outN+1)/2, SyncCount) ;
+	    }
+	}
+      else // isOut
+	{ SyncCount *scOut = cn->sc + cn->inN ;
+	  I32       *scOutOff = (I32*)(scIn + cn->inN + cn->outN) + cn->inN ;
+	  int i ;
+	  for (i = 0 ; i < cn->outN ; ++i)
+	    if (scOut[i].sync == x && (!scOutOff[i] || scOutOff[i] == off)) break ;
+	  if (i < cn->outN) // found
+	    { ++scOut[i].count ; scOutOff[i] = off ; }
+	  else // should be rare - have to extend the array
+	    { SyncCount *oldSc = cn->sc, *old = oldSc ;
+	      scOut = cn->sc = new0 (cn->inN + cn->outN+1 + (cn->inN+cn->outN+2)/2, SyncCount) ;
+	      memcpy (scOut, old, (cn->inN+cn->outN)*sizeof(SyncCount)) ;
+	      scOut += cn->inN + cn->outN ; old += cn->inN + cn->outN ;
+	      scOut->sync = x ; scOut->count = 1 ; ++scOut ;
+	      I32 *iOut = (I32*)sc, *iold = (I32*)old ;
+	      memcpy (iOut, old, (cn->inN + cn->outN)*sizeof(I32)) ;
+	      iOut += cn->inN + cn->outN ; iold += cn->inN + cn->outN ;
+	      *iOut++ = off ;
+	      newFree (oldSc, cn->inN + cn->outN + (cn->inN+cn->outN+1)/2, SyncCount) ;
+	    }
+	}
+    }
+}
+
+typedef struct {
+  I32 offset ;
+  I32 count ;
+} EdgeInfo ;
+
+typedef struct {
+  HashKey k ;
+  I32 offset, count ;
+} DoubleEdge ;
+
+void addEdge (I32 to, I32 from, I32 off, Array count, Hash hash, Array info, Array doubleEdge)
+{
+  int i ;
+  HashKey k = hashInt2 (to, from) ;
+  if (hashAdd (hash, k, &i))
+    { EdgeInfo *ei = arrayp(info,i,EdgeInfo) ;
+      ei->offset = off ;
+      ei->count = 1 ;
+      ++array(count,to,int) ;
+    }
+  else
+    { EdgeInfo *ei = arrp(info,i,EdgeInfo) ;
+      if (ei->offset == off)
+	++ei->count ;
+      else if (ei->offset > 0) // a new double
+	{ DoubleEdge *de = arrayp(doubleEdge, arrayMax(doubleEdge), DoubleEdge) ;
+	  de->k = k ;
+	  de->offset = ei->offset ;
+	  de->count = ei->count ;
+	  de = arrayp(doubleEdge, arrayMax(doubleEdge), DoubleEdge) ;
+	  de->k = k ;
+	  de->offset = off ;
+	  de->count = 1 ;
+	  ++array(count,to,int) ;
+	  ei->offset = -1 ; // marker for this being a double edge
+	}
+      else // -1
+	{ DoubleEdge *de = arrp(doubleEdge, 0, DoubleEdge) ;
+	  int j ;
+	  for (j = 0 ; j < arrayMax(doubleEdge) ; ++j, ++de)
+	    if (de->k == k && de->offset == off) { ++de->count ; break ; }
+	  if (j >= arrayMax(doubleEdge)) // no match to offset
+	    { de = array(doubleEdge, arrayMax(doubleEdge), DoubleEdge) ; // redo because may be off end
+	      de->k = k ;
+	      de->offset = off ;
+	      de->count = 1 ;
+	      ++array(count,to,int) ;
+	    }
+	}
+    }
+}
+
+SyngBWT *syngBWTconvert (I64 nNode, I64 nodeLen, OneFile *ofPath) // convert a .1path file to a SyngBWT
+{
+  int i, j ;
+  
+  I64 nPath, maxPathLen ;
+  if (!ofPath || !ofPath->subType || strcmp(ofPath->subType, "path") ||
+      !oneStats (ofPath, 'z', &nPath, &maxPathLen, 0) || !maxPathLen)
+    die ("syngBWTconvert failed to find paths in path file") ;
+  char *ofPathName = ofPath->fileName ; // for tidiness
+  I64  *nodes = new(maxPathLen+1,64) ; // ensure enough space to read nodes[pathLen]
+  oneUserBuffer (ofPath, 'z', nodes) ;
+  I64  *offsets = new(maxPathLen+1,64) ; // same for offsets
+  oneUserBuffer (ofPath, 'o', offsets) ;
+
+  printf ("nNode %lld nodeLen %lld nPath %lld maxPathLen %lld\n", nNode, nodeLen, nPath, maxPathLen) ;
+
+  SyngBWT *sb = syngBWTcreate (nodeLen, nNode + 1) ; // this will be the output
+
+  // first pass through the path file to count edges into and out of each node
+
+  Array edgeIn     = arrayCreate (nNode, int) ;  // count of incoming edges
+  Array edgeOut    = arrayCreate (nNode, int) ; // count of outgoing edges
+  Hash  edgeHash   = hashCreate (4*nNode) ;     // use this to store edges
+  Array edgeInfo   = arrayCreate (4*nNode, EdgeInfo) ;
+  Array doubleEdge = arrayCreate (1024, DoubleEdge) ; // use for cases where same edge has >1 offsets
+  
+  oneGoto (ofPath, 'P', 1) ; // can't fail since we have paths
+  while (oneReadLine (ofPath) && ofPath->lineType != 'z') ; // get to path record
+  int zCount = 0 ;
+  while (ofPath->lineType == 'z') // for each path
+    { ++zCount ;
+      int pathLen = oneLen(ofPath) ;
+      oneReadLine (ofPath) ;
+      if (ofPath->lineType != 'o') die ("%s line %d is not o", ofPathName, ofPath->line) ;
+      if (oneLen(ofPath) != pathLen) die ("%s line %d o len != z len", ofPathName, ofPath->line) ;
+      if (pathLen) // not sure whether I need this, but safe
+	{ I32 last = 0, lastOffset = 0 ;
+	  for (i = 0 ; i <= pathLen ; ++i)
+	    { I32 next = nodes[i] ;
+	      I32 off = offsets[i] - lastOffset ;
+	      if (next > 0) addEdge (next, last, off, edgeIn, edgeHash, edgeInfo, doubleEdge) ;
+	      if (next < 0) addEdge (-next, -last, off, edgeOut, edgeHash, edgeInfo, doubleEdge) ;
+	      if (last > 0) addEdge (last, next, off, edgeOut, edgeHash, edgeInfo, doubleEdge) ;
+	      if (last < 0) addEdge (-last, -next, off, edgeIn, edgeHash, edgeInfo, doubleEdge) ;
+	      last = next ; lastOffset = offsets[i] ;
+	    }
+	}
+      while (oneReadLine (ofPath) && ofPath->lineType != 'z') ;
+    }
+  printf ("read %d paths: ", zCount) ; timeUpdate (stdout) ;
+
+  // use the edge counts to set up the node objects
+  int nSimple = 0, nComplex = 0, nEdge = 0 ;
+  int n1 = 0, n2 = 0, n4 = 0, n8 = 0, n16 = 0, n32 = 0 ; // number of bits needed for an edge
+  for (i = 1 ; i < nNode ; ++i)
+    { int inN = arr(edgeIn,i,int), outN = arr(edgeOut,i,int) ;
+      if (inN < 1 || outN < 1) continue ; // printf ("node %d in %d out %d\n", i, inN, outN) ;
+      else if (inN == 1 && outN == 1) // make a simple node
+	{ arr(sb->status,i,U8) = NODE_SIMPLE ;
+	  ++nSimple ;
+	}
+      else
+	{ arr(sb->status,i,U8) = NODE_COMPLEX ;
+	  ComplexNode *cn = &(arr(sb->node,i,Node).complex) ;
+	  cn->inN = inN ; cn->outN = outN ;
+	  nEdge += inN + outN ;
+	  int nSC = inN + outN + (inN + outN + 1)/2 ;
+	  cn->sc = new0 (nSC, SyncCount) ;
+	  ++nComplex ;
+	  if (inN == 2) ++n1 ; else if (inN <= 4) ++n2 ;
+	  else if (inN <= 16) ++n4 ; else if (inN <= 256) ++n8 ;
+	  else if (inN <= 65536) ++n16 ; else ++n32 ;
+	  if (outN == 2) ++n1 ; else if (outN <= 4) ++n2 ;
+	  else if (outN <= 16) ++n4 ; else if (outN <= 256) ++n8 ;
+	  else if (outN <= 65536) ++n16 ; else ++n32 ;
+	}
+    }
+  printf ("BWT convert pass 1\n") ;
+  printf ("  %d nodes %d zero %d simple %d complex with %d edges\n",
+	  (int)nNode,(int) (nNode - nSimple - nComplex), nSimple, nComplex, nEdge) ;
+  printf ("  edge complexity %d 1bit, %d 2bit, %d 4bit, %d 8bit, %d 16bit, %d 32bit\n",
+	  n1, n2, n4, n8, n16, n32) ;
+  timeUpdate (stdout) ;
+
+  // second pass - count occupancy of each edge and add offsets, splitting if necessary
+
+  oneGoto (ofPath, 'P', 1) ; // can't fail since we have paths
+  while (oneReadLine (ofPath) && ofPath->lineType != 'z') ; // get to path record
+  while (ofPath->lineType == 'z') // for each path
+    { int pathLen = oneLen(ofPath) ;
+      oneReadLine (ofPath) ; // read the 'o' line - we checked this worked in pass 1
+      if (pathLen) // not sure whether I need this, but safe
+	{ I32   last = 0 ;
+	  U8   *lastStatus = arrp(sb->status,0,Status) ;
+	  Node *lastNode = arrp(sb->node,0,Node) ;
+	  for (i = 0 ; i <= pathLen ; ++i)
+	    { I32   next = nodes[i] ;
+	      U8   *nextStatus = arrp(sb->status,next>0?next:-next,U8) ;
+	      Node *nextNode = arrp(sb->node,next>0?next:-next,Node) ;
+	      if (next < 0) updateNodePass2 (nextNode, nextStatus, last, offsets[i], true) ;
+	      if (next > 0) updateNodePass2 (nextNode, nextStatus, -last, offsets[i], false) ;
+	      if (last > 0) updateNodePass2 (lastNode, lastStatus, next, offsets[i], false) ;
+	      if (last < 0) updateNodePass2 (lastNode, lastStatus, -next, offsets[i], true) ;
+	      last = next ;
+	      lastStatus = nextStatus ;
+	      lastNode = nextNode ;
+	    }
+	}
+      while (oneReadLine (ofPath) && ofPath->lineType != 'z') ;
+    }
+  printf ("BWT convert pass 2\n") ;
+  printf (" read %d paths\n", zCount) ;
+  timeUpdate (stdout) ;
+	  
+  hashDestroy (edgeHash) ;
+  
+  arrayDestroy (edgeIn) ;
+  arrayDestroy (edgeOut) ;
+  newFree (nodes, maxPathLen+1, I64) ;
+
+  return sb ;
+}
+
+int main (int argc, char *argv[])
+{
+  timeUpdate(0) ;
+  if (argc != 3) die ("usage: syngbwtconvert <.1khash file> <.1path file>") ;
+
+  OneSchema *schema = oneSchemaCreateFromText (syngSchemaText) ;
+
+  OneFile *ofK = oneFileOpenRead (argv[1], schema, "khash", 1) ;
+  if (!ofK || strcmp (ofK->fileType, "khash") || !oneGoto (ofK, 't', 1) || !oneReadLine (ofK))
+    die ("syngBWTconvert failed to extract info from khash file") ;
+  I64 nNode = oneInt(ofK,0), nodeLen = oneInt(ofK,1) ;
+  oneFileClose (ofK) ;
+  
+  OneFile *ofPath = oneFileOpenRead (argv[2], schema, "path", 1) ;
+  SyngBWT *sb = syngBWTconvert (nNode, nodeLen, ofPath) ;
+  oneFileClose (ofPath) ;
+  
+  syngBWTdestroy (sb) ;
+  printf ("FINISHED: ") ; timeTotal (stdout) ;
+}
+
+#endif
