@@ -22,12 +22,15 @@ UTILS_OBJS = hash.o dict.o array.o utils.o
 UTILS_HEADERS = utils.h array.h dict.h hash.h
 $(UTILS_OBJS): utils.h $(UTILS_HEADERS)
 
-#SEQIO_OPTS = -DONEIO
-#SEQIO_LIBS = -lm -lz
-
+# Set BAMIO=1 to enable SAM/BAM/CRAM support (requires htslib in ../htslib)
+ifdef BAMIO
 HTS_DIR = $(PWD)/../htslib/.
 SEQIO_OPTS = -DONEIO -DBAMIO -I$(HTS_DIR)/htslib/
-SEQIO_LIBS = -L$(HTS_DIR) -Wl,-rpath $(HTS_DIR) -lhts -lm -lbz2 -llzma -lcurl -lz 
+SEQIO_LIBS = -L$(HTS_DIR) -Wl,-rpath $(HTS_DIR) -lhts -lm -lbz2 -llzma -lcurl -lz
+else
+SEQIO_OPTS = -DONEIO
+SEQIO_LIBS = -lm -lz
+endif 
 
 seqio.o: seqio.c seqio.h ONElib.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(SEQIO_OPTS) -c $^
@@ -56,7 +59,7 @@ syngmap: syngmap.c syngbwt.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
 syngstat: syngstat.c syngbwt.o ONElib.o $(UTILS_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ -lz
+	$(CC) $(CFLAGS) -o $@ $^ -lz -lpthread
 
 syngprune: syngprune.c seqio.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
