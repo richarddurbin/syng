@@ -19,21 +19,21 @@ are available from the [SEQUENCE_UTILTIES](https://github.com/thegenemyers/ONEco
 ## Building
 ```
   git clone https://github.com/richarddurbin/syng.git
+  cd syng
   make
 ```
-If you want to be able to read SAM/BAM/CRAM files then you need to install [htslib](https://github.com/samtools/htslib) in a parallel directory and use Makefile.bam:
+If you want to be able to read SAM/BAM/CRAM files then you need to install [htslib](https://github.com/samtools/htslib) in a parallel directory and build with `BAMIO=1`:
 
  ```
- cd ..
+  cd ..
   git clone https://github.com/samtools/htslib.git
   cd htslib
   autoreconf -i  # Build the configure script and install files it uses
   ./configure    # Optional but recommended, for choosing extra functionality
   make
-  make install
   cd ../syng
   make clean
-  make -f Makefile.bam
+  make BAMIO=1
 ```
 
 ## Libraries
