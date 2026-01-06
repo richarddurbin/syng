@@ -59,7 +59,7 @@ syngmap: syngmap.c syngbwt.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
 syngstat: syngstat.c syngbwt.o ONElib.o $(UTILS_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ -lz
+	$(CC) $(CFLAGS) -o $@ $^ -lz -lpthread
 
 syngprune: syngprune.c seqio.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
