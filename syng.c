@@ -52,13 +52,21 @@ static OutType outType = NONE ;
 
 /***** threadProcessSequences() handles input from SeqIO: maps sequences to sync,pos *****/
 
+#define PF_DIST 16
+
 static void *threadProcessSequences (void* arg) // find the start positions of all the syncmers
 {
   ThreadInfo *ti = (ThreadInfo*) arg ;
   int i ;
   I64 seqStart = 0 ;
-  I64 sync ;
-  U64 *uBuf = new0(ti->kh->plen + 2, U64) ; // working buffer + batch state for threadsafe kmerHash ops
+  KmerHash *kh = ti->kh ;
+  int plen = kh->plen ;
+
+  // Pipeline buffers: per-slot packed kmer, position, orientation
+  U64  *pipePack = new0(PF_DIST * plen, U64) ;
+  int   pipePos[PF_DIST] ;
+  bool  pipeIsRC[PF_DIST] ;
+  I64   batchState[2] = {0, 0} ; // batch ID state shared across all insertions in this thread
 
   arrayMax(ti->syncPos) = 0 ;
 
@@ -68,16 +76,50 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
       seqStart += seqLen ;
       int pos, spStart = arrayMax(ti->syncPos) ;
       SeqhashIterator *sit = syncmerIterator (ti->sh, seq, seqLen) ;
-      while (syncmerNext (sit, 0, &pos, 0))
-	{ sync = 0 ; // default if not found
+
+      // Phase 1: fill pipeline with first PF_DIST entries
+      int nFilled = 0 ;
+      bool hasMore = true ;
+      while (nFilled < PF_DIST && syncmerNext (sit, 0, &pos, 0))
+	{ int slot = nFilled ;
+	  pipePos[slot] = pos ;
+	  pipeIsRC[slot] = !isCanonical (seq+pos, kh->len) ;
+	  U64 *pk = pipePack + slot * plen ;
+	  if (pipeIsRC[slot]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+	  nFilled++ ;
+	}
+      if (nFilled < PF_DIST) hasMore = false ;
+
+      // Phase 2: process oldest entry (prefetched PF_DIST iterations ago), refill slot
+      int nProcessed = 0 ;
+      while (nProcessed < nFilled)
+	{ int slot = nProcessed % PF_DIST ;
+	  U64 *pk = pipePack + slot * plen ;
+	  I64 sync = 0 ;
 	  if (ti->isAdd)
-	    kmerHashAddThreadSafe (ti->kh, seq+pos, &sync, uBuf) ;
+	    kmerHashAddPackedThreadSafe (kh, pk, &sync, pipeIsRC[slot], batchState) ;
 	  else
-	    kmerHashFindThreadSafe (ti->kh, seq+pos, &sync, uBuf) ;
-	  if (sync > 2 || sync < -2 || !sync) // don't record poly-A, poly-C, poly-G, poly-T
+	    kmerHashFindPackedThreadSafe (kh, pk, &sync, pipeIsRC[slot]) ;
+	  if (sync > 2 || sync < -2 || !sync)
 	    { SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
-	      sp->pos = pos ;
+	      sp->pos = pipePos[slot] ;
 	      sp->sync = sync ;
+	    }
+	  nProcessed++ ;
+	  // Refill this slot with next syncmer
+	  if (hasMore)
+	    { if (syncmerNext (sit, 0, &pos, 0))
+		{ pipePos[slot] = pos ;
+		  pipeIsRC[slot] = !isCanonical (seq+pos, kh->len) ;
+		  pk = pipePack + slot * plen ;
+		  if (pipeIsRC[slot]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+		  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+		  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+		  nFilled++ ;
+		}
+	      else hasMore = false ;
 	    }
 	}
       seqhashIteratorDestroy (sit) ;
@@ -85,7 +127,7 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
       arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ; // ensure not used in output loop
     }
 
-  newFree (uBuf, ti->kh->plen + 2, U64) ;
+  newFree (pipePack, PF_DIST * plen, U64) ;
   return 0 ;
 }
 

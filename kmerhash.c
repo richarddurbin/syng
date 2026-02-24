@@ -27,7 +27,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->len = len ;
   kh->dim = 20 ;
   U64 size ;
-  for (size = 1 << kh->dim ; size < initialSize ; ++kh->dim, size <<= 1) ;
+  for (size = (U64)1 << kh->dim ; size < initialSize ; ++kh->dim, size <<= 1) ;
   kh->table = new0(size, I64) ;
   kh->mask = size - 1 ;
   kh->plen = (len+31) >> 5 ;
@@ -121,8 +121,8 @@ bool kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and 
 static void doubleTable (KmerHash *kh)
 {
   ++kh->dim ;
-  I64 *newTable = new0 (1 << kh->dim, I64) ;
-  kh->mask = (1 << kh->dim) - 1 ;
+  I64 *newTable = new0 ((U64)1 << kh->dim, I64) ;
+  kh->mask = ((U64)1 << kh->dim) - 1 ;
   U64  i ;
   for (i = 1 ; i <= kh->max ; ++i) // remap all the packed sequences into newTable
     { U64 loc = *packseq(kh,i) & kh->mask ;
@@ -227,6 +227,55 @@ bool kmerHashAddThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf)
     }
 }
 
+bool kmerHashAddPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC, I64 *batchState)
+{ // like kmerHashAddThreadSafe but takes pre-packed canonical kmer
+  // batchState is I64[2] (nextId, endId), zero-initialized, shared per thread
+  U64 loc = *u & kh->mask ;
+  U64 delta = 0 ;
+  I64 id = 0 ;
+
+  while (true)
+    { I64 x = kh->table[loc] ;
+      if (x > 0)
+	{ if (isMatch (u, packseq(kh,x), kh->plen))
+	    { if (index) *index = isRC ? -x : x ;
+	      return false ;
+	    }
+	}
+      else
+	{ if (!id)
+	    { if (batchState[0] >= batchState[1])
+		{ I64 base = __sync_fetch_and_add (&kh->max, ID_BATCH_SIZE) ;
+		  batchState[0] = base + 1 ;
+		  batchState[1] = base + 1 + ID_BATCH_SIZE ;
+		}
+	      id = batchState[0]++ ;
+	      if (id >= (I64)kh->psize)
+		die ("kmerHashAddPackedThreadSafe: pack overflow %lld >= %lld", id, (I64)kh->psize) ;
+	      memcpy (packseq(kh,id), u, kh->plen * sizeof(U64)) ;
+	      __sync_synchronize () ;
+	    }
+	  I64 old = __sync_val_compare_and_swap (&kh->table[loc], 0, id) ;
+	  if (old == 0)
+	    { if (index) *index = isRC ? -id : id ;
+	      return true ;
+	    }
+	  if (isMatch (u, packseq(kh,old), kh->plen))
+	    { if (index) *index = isRC ? -old : old ;
+	      return false ;
+	    }
+	}
+      if (!delta) delta = hashDelta (u, kh->plen, kh->dim) ;
+      loc = (loc + delta) & kh->mask ;
+    }
+}
+
+bool kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC)
+{
+  U64 loc ;
+  return find (kh, u, index, isRC, &loc, false) ;
+}
+
 void kmerHashResize (KmerHash *kh)
 { // call single-threaded (e.g. between chunks) to resize if near capacity
   if (kh->max >= (I64)(kh->psize * 0.7))
@@ -301,7 +350,7 @@ bool kmerHashWriteOneFile (KmerHash *kh, OneFile *of)
   if (total) oneWriteLineDNA2bit (of, 'S', total << 5, (U8*)dna) ;
   
   // next find the locations of all the kmers and write them
-  I64 i, size = 1 << kh->dim, *loc0 = new(kh->max,I64), *loc = loc0 ;
+  I64 i, size = (I64)1 << kh->dim, *loc0 = new(kh->max,I64), *loc = loc0 ;
   for (i = 0 ; i < size ; ++i) if (kh->table[i]) loc[kh->table[i]-1] = i ;
   // similarly chunk the location buffer
   total = kh->max ;

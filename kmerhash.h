@@ -49,6 +49,9 @@ bool      kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) ; // true if fou
 // these versions add/find already packed and correctly oriented kmers
 bool      kmerHashAddThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf) ;
 // CAS-based concurrent insert; buf must be (kh->plen + 2) U64s, zero-initialized; may create holes in pack[]
+bool      kmerHashAddPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC, I64 *batchState) ;
+// like AddThreadSafe but takes pre-packed canonical kmer; batchState is I64[2], zero-initialized per thread
+bool      kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC) ;
 I64       kmerHashCompact (KmerHash *kh) ;
 // remove holes left by CAS races; returns number of holes removed
 void      kmerHashResize (KmerHash *kh) ;
