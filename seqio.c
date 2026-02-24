@@ -28,6 +28,10 @@ void bamFileClose (SeqIO *si) ;
 // global
 char* seqIOtypeName[] = { "unknown", "fasta", "fastq", "binary", "onecode", "bam" } ;
 
+#ifdef HAVE_AVX2
+#include "avx2.h"
+#endif
+
 SeqIO *seqIOopenRead (char *filename, int* convert, bool isQual)
 {
   SeqIO *si = new0 (1, SeqIO) ;
@@ -326,9 +330,15 @@ bool seqIOread (SeqIO *si)
 	{ while (*si->b != '\n') bufAdvanceInRecord(si) ;
 	  ++si->line ; bufAdvanceEndRecord(si) ;
 	}
-      char *s = sqioSeq(si), *t = s ;
-      while (s < si->b) if ((*t++ = si->convert[(int)*s++]) < 0) --t ;
-      si->seqLen = t - sqioSeq(si) ;
+#ifdef HAVE_AVX2
+      if (si->convert == dna2textN2AConv) /* AVX2 convert+filter: small gain (~2%) */
+	si->seqLen = convertFilterAVX2 (sqioSeq(si), si->b, si->convert) ;
+      else
+#endif
+      { char *s = sqioSeq(si), *t = s ;
+        while (s < si->b) if ((*t++ = si->convert[(int)*s++]) < 0) --t ;
+        si->seqLen = t - sqioSeq(si) ;
+      }
     }
   else if (si->type == FASTQ)
     { while (*si->b != '\n') bufAdvanceInRecord(si) ;
@@ -593,12 +603,19 @@ void seqIOwrite (SeqIO *si, char *id, char *desc, U64 seqLen, char *seq, char *q
 
 /********* reverse complement sequences ********/
 
-char* seqRevComp (char* s, U64 len) // index and text (including ambig) 
+char* seqRevComp (char* s, U64 len) // index and text (including ambig)
 {
   char *r = new(len,char) ;
   r += len ;
   while (len--) *--r = complementBase[(int)*s++] ;
   return r ;
+}
+
+bool isCanonical (char *dna, int len)
+{
+  int x = -1, y = len ;
+  while (dna[++x] == complementBase[(int)dna[--y]]) ;
+  return (dna[x] < complementBase[(int)dna[y]]) ;
 }
 
 /********** some routines to pack sequence and qualities for binary representation ***********/
@@ -633,7 +650,8 @@ SeqPack *seqPackCreate (char unpackA)
   return sp ;
 }
 
-static U8 pack[] = {    // sends N (indeed any non-CGT) to A, except 0,1,2,3 are maintained
+
+static U8 pack[] = {    // sends N (indeed any non-CGT) to A
    0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
@@ -659,6 +677,9 @@ U8* seqPack (SeqPack *sp, char *s, U8 *u, U64 len) /* compress s into (len+3)/4 
 {
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
+#ifdef HAVE_AVX2
+  seqPackAVX2 (s, u, len) ;
+#else
   while (len >= 4)
     { *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) |
 	(pack[(int)s[2]] << 4) | (pack[(int)s[3]] << 6) ;
@@ -670,6 +691,7 @@ U8* seqPack (SeqPack *sp, char *s, U8 *u, U64 len) /* compress s into (len+3)/4 
       case 1: *u++ = pack[(int)s[0]] ; break ;
       case 0: break ;
     }
+#endif
   return u0 ;
 }
 
@@ -677,6 +699,9 @@ U8* seqPackRevComp (SeqPack *sp, char *s, U8 *u, U64 len) /* packs the RC of the
 {
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
+#ifdef HAVE_AVX2
+  seqPackRevCompAVX2 (s, u, len) ;
+#else
   s += len-4 ;
   while (len >= 4)
     { *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) |
@@ -689,6 +714,7 @@ U8* seqPackRevComp (SeqPack *sp, char *s, U8 *u, U64 len) /* packs the RC of the
       case 1: *u++ = packC[(int)s[3]] ; break ;
       default: break ;
     }
+#endif
   return u0 ;
 }
 
@@ -985,6 +1011,17 @@ int dna2index4Conv[] = {    /* sends N,n to A - NB also 0,1,2,3 maintained */
   -2,  -2,  -2,  -2,   3,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
   -2,   0,  -2,   1,  -2,  -2,  -2,   2,  -2,  -2,  -2,  -2,  -2,  -2,   0,  -2,
   -2,  -2,  -2,  -2,   3,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+} ;
+
+int dna2textN2AConv[] = {    /* sends N,n to A - keeps ASCII */
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2, 'A',  -2, 'C',  -2,  -2,  -2, 'G',  -2,  -2,  -2,  -2,  -2,  -2, 'A',  -2,
+  -2,  -2,  -2,  -2, 'T',  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2, 'A',  -2, 'C',  -2,  -2,  -2, 'G',  -2,  -2,  -2,  -2,  -2,  -2, 'A',  -2,
+  -2,  -2,  -2,  -2, 'T',  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
 } ;
 
 int dna2binaryConv[] = {

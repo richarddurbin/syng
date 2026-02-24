@@ -1,3 +1,5 @@
+/* HISTORICAL -- replaced by syncmer_iter.c/h, kept for reference */
+
 /*  File: seqhash.c
  *  Author: Richard Durbin (rd109@cam.ac.uk)
  *  Copyright (C) Richard Durbin, Cambridge University, 2018
@@ -7,7 +9,7 @@
 	see test main() at end for standard usage pattern
  * Exported functions: see seqhash.h
  * HISTORY:
- * Last edited: Jan 14 09:28 2025 (rd109)
+ * Last edited: Feb 21 2026 (rd109)
  * Created: Sat Feb 24 19:20:18 2018 (rd)
  *-------------------------------------------------------------------
  */

@@ -12,6 +12,10 @@
 
 #include "kmerhash.h"
 
+#ifdef HAVE_AVX2
+#include "avx2.h"
+#endif
+
 static inline void Compress_DNA (int len, char *s, U64 *u) ;    // from s to u
 static inline void Compress_DNA_RC (int len, char *s, U64 *u) ; // from s to u
 static inline void Uncompress_DNA (int len, U64 *u, char *t) ;  // from u to t
@@ -31,7 +35,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->pack = new0(kh->plen*kh->psize, U64) ;
   kh->seqbuf = new0(len+1,char) ;
   kh->seqPack = seqPackCreate ('a') ; // 'a' means unpack into acgt
-  return kh ; 
+  return kh ;
 }
 
 void kmerHashDestroy (KmerHash *kh)
@@ -43,28 +47,20 @@ void kmerHashDestroy (KmerHash *kh)
   newFree (kh, 1, KmerHash) ;
 }
 
-static U8 comp[] = {   /* sends N (indeed any non-CGT) to A, except 0,1,2,3 are maintained */
-   3,   2, 1,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
-   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
-   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
-   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
-   0, 'T', 0, 'G',   0, 0, 0, 'C', 0, 0, 0, 0, 0, 0, 'N', 0,
-   0,   0, 0,   0, 'A', 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0,
-   0, 't', 0, 'g',   0, 0, 0, 'c', 0, 0, 0, 0, 0, 0, 'n', 0,
-   0,   0, 0,   0, 'a', 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0
-} ;
-
-static inline bool isCanonical (char *dna, int len)
-{
-  int x = -1, y = len ;
-  while (dna[++x] == comp[(int)dna[--y]]) ;
-  return (dna[x] < comp[(int)dna[y]]) ;
-}
 
 static inline bool isMatch (U64 *u, U64 *v, int n)
 {
-  while (n--) if (*u++ != *v++) return false ;
-  return true ;
+  switch (n) {
+    case 1: return u[0] == v[0] ;
+    case 2: return u[0] == v[0] && u[1] == v[1] ;
+    default:
+#ifdef HAVE_AVX2
+      return isMatchAVX2 (u, v, n) ;
+#else
+      while (n--) if (*u++ != *v++) return false ;
+      return true ;
+#endif
+  }
 }
 
 static inline U64 hashDelta (U64 *u, int plen, int dim)
@@ -76,8 +72,6 @@ static inline U64 hashDelta (U64 *u, int plen, int dim)
   v |= 1 ; // ensure that delta is odd so coprime with 2^dim
   return v ;
 }
-
-#define packseq(kh,i) ((kh)->pack + (i)*(kh)->plen)
 
 static inline bool find (KmerHash *kh, U64 *u, I64 *index, bool isRC, U64 *newLoc, bool isSafe)
 {
@@ -174,11 +168,99 @@ bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and c
   memcpy (packseq(kh,++kh->max), u, kh->plen*sizeof(I64)) ; // have to copy it
   kh->table[newLoc] = kh->max ; // add the new location
   if (index) *index = kh->max ;
-  
+
   if (kh->max == kh->psize-1) doubleTable (kh) ;
 
   // printf ("add: loc %llx index %lld max %lld\n", loc, *index, kh->max) ;
   return true ;
+}
+
+#define ID_BATCH_SIZE 1024
+
+bool kmerHashAddThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf)
+{ // CAS-based concurrent insert; buf must be (kh->plen + 2) U64s, zero-initialized
+  // buf[plen], buf[plen+1] hold per-thread batch state (nextId, endId)
+  bool isRC = !isCanonical (dna, kh->len) ;
+  if (isRC) seqPackRevComp (kh->seqPack, dna, (U8*)buf, kh->len) ;
+  else seqPack (kh->seqPack, dna, (U8*)buf, kh->len) ;
+
+  U64 loc = *buf & kh->mask ;
+  U64 delta = 0 ;
+  I64 id = 0 ; // 0 means we haven't reserved an id yet
+
+  while (true)
+    { I64 x = kh->table[loc] ;
+      if (x > 0)
+	{ if (isMatch (buf, packseq(kh,x), kh->plen)) // found existing
+	    { if (index) *index = isRC ? -x : x ;
+	      return false ;
+	    }
+	}
+      else // x == 0: empty slot
+	{ if (!id) // reserve an id from per-thread batch
+	    { I64 *bN = (I64*)&buf[kh->plen] ;
+	      I64 *bE = (I64*)&buf[kh->plen + 1] ;
+	      if (*bN >= *bE) // grab a new batch
+		{ I64 base = __sync_fetch_and_add (&kh->max, ID_BATCH_SIZE) ;
+		  *bN = base + 1 ;
+		  *bE = base + 1 + ID_BATCH_SIZE ;
+		}
+	      id = (*bN)++ ;
+	      if (id >= (I64)kh->psize)
+		die ("kmerHashAddThreadSafe: pack overflow %lld >= %lld", id, (I64)kh->psize) ;
+	      memcpy (packseq(kh,id), buf, kh->plen * sizeof(U64)) ;
+	      __sync_synchronize () ; // ensure pack[] visible before table update
+	    }
+	  I64 old = __sync_val_compare_and_swap (&kh->table[loc], 0, id) ;
+	  if (old == 0) // CAS succeeded
+	    { if (index) *index = isRC ? -id : id ;
+	      return true ;
+	    }
+	  // CAS failed: check if winner inserted our kmer
+	  if (isMatch (buf, packseq(kh,old), kh->plen))
+	    { if (index) *index = isRC ? -old : old ;
+	      return false ; // id slot in pack[] becomes a hole
+	    }
+	}
+      if (!delta) delta = hashDelta (buf, kh->plen, kh->dim) ;
+      loc = (loc + delta) & kh->mask ;
+    }
+}
+
+void kmerHashResize (KmerHash *kh)
+{ // call single-threaded (e.g. between chunks) to resize if near capacity
+  if (kh->max >= (I64)(kh->psize * 0.7))
+    { fprintf (stdout, "  resizing hash table at %lld entries (%.0f%% full)\n",
+	       kh->max, 100.0 * kh->max / kh->psize) ;
+      doubleTable (kh) ;
+    }
+}
+
+I64 kmerHashCompact (KmerHash *kh)
+{ // remove holes left by CAS races: entries in pack[] not referenced by any table slot
+  I64 maxOld = kh->max ;
+  I64 size = (I64)1 << kh->dim ;
+  I64 *remap = new0 (maxOld + 1, I64) ;
+  I64 i, newMax = 0 ;
+
+  for (i = 0 ; i < size ; ++i)
+    if (kh->table[i] > 0) remap[kh->table[i]] = 1 ;
+  for (i = 1 ; i <= maxOld ; ++i)
+    if (remap[i]) remap[i] = ++newMax ;
+
+  I64 nHoles = maxOld - newMax ;
+  if (nHoles > 0)
+    { for (i = 1 ; i <= maxOld ; ++i)
+	if (remap[i] && remap[i] != i)
+	  memcpy (packseq(kh, remap[i]), packseq(kh, i), kh->plen * sizeof(U64)) ;
+      for (i = 0 ; i < size ; ++i)
+	if (kh->table[i] > 0)
+	  kh->table[i] = remap[kh->table[i]] ;
+      kh->max = newMax ;
+    }
+
+  newFree (remap, maxOld + 1, I64) ;
+  return nHoles ;
 }
 
 char* kmerHashSeq (KmerHash *kh, I64 i, char *buf) // user must provide buf to be threadsafe

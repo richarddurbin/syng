@@ -11,7 +11,7 @@
  */
 
 #include "syng.h"
-#include "seqhash.h"
+#include "syncmer_iter.h"
 
 typedef struct {
   I32 seq, pos ;
@@ -20,22 +20,22 @@ typedef struct {
 /****************************************************/
 
 typedef struct {
-  int w, k, seed ;
+  int w, k ;
 } Params ;
 
 static void readParams (OneFile *of, Params *p)
 { while (oneReadLine (of) && of->lineType != 'h') ;
   if (of->lineType != 'h') die ("sync file %s has no 'h' parameters record", oneFileName(of)) ;
-  p->k = oneInt(of,0) ; p->w = oneInt(of,1) ; p->seed = oneInt(of,2) ;
-  fprintf (stderr, "read syncmer parameters k %d w %d (size %d) seed %d\n",
-	   p->k, p->w, p->k + p->w, p->seed) ;
+  p->k = oneInt(of,0) ; p->w = oneInt(of,1) ;
+  fprintf (stderr, "read syncmer parameters k %d w %d (size %d)\n",
+	   p->k, p->w, p->k + p->w) ;
 }
 
 static void checkParams (OneFile *of, Params *p)
 {
-  if (oneInt(of,0) != p->k || oneInt(of,1) != p->w || oneInt(of,2) != p->seed)
-    die ("hash parameters mismatch: (k,w,s) file (%d,%d,%d) != code (%d,%d,%d)",
-	 oneInt(of,0), oneInt(of,1), oneInt(of,2), p->k, p->w, p->seed) ;
+  if (oneInt(of,0) != p->k || oneInt(of,1) != p->w)
+    die ("hash parameters mismatch: (k,w) file (%d,%d) != code (%d,%d)",
+	 oneInt(of,0), oneInt(of,1), p->k, p->w) ;
 }
 
 /****************************************************/
@@ -80,7 +80,7 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 	{ int j, nG = 0 ;
 	  char *s = seq ;
 	  for (j = 0 ; j < si->seqLen ; ++j)
-	    if (*s++ != 2) nG = 0 ;
+	    if (*s++ != 'G') nG = 0 ;
 	    else if (++nG > filterG) { si->seqLen = 0 ; break ; }
 	}
       if (filterQ && si->avQ < filterQ) si->seqLen = 0 ;
@@ -144,7 +144,7 @@ int main (int argc, char *argv[])
   if (!ofK) die ("failed to open .1khash file %s", argv[0]) ;
   OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", 1) ;
   if (!ofGBWT) die ("failed to open .1gbwt file %s", argv[1]) ;
-  SeqIO   *sio = seqIOopenRead (argv[2], dna2index4Conv, false) ;
+  SeqIO   *sio = seqIOopenRead (argv[2], dna2textN2AConv, false) ;
   if (!sio) die ("failed to open sequence file %s", argv[2]) ;
 
   // this will be our output file
@@ -158,7 +158,7 @@ int main (int argc, char *argv[])
   // read the khash 
   Params     params ;
   readParams (ofK, &params) ;                    // read the syncmer hash parameters
-  Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ; // need the +1 here, awkwardly
+  Seqhash *sh = seqhashCreate (params.k, params.w+1) ; // need the +1 here, awkwardly
   KmerHash  *kh = kmerHashReadOneFile (ofK) ;    // read in the kmerhash
   if (kh->len != params.w + params.k)
     die ("syncmer len mismatch %d != %d + %d", kh->len, params.w, params.k) ;

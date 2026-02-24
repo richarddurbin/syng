@@ -1,3 +1,5 @@
+/* HISTORICAL -- replaced by syncmer_iter.c/h, kept for reference */
+
 /*  File: seqhash.h
  *  Author: Richard Durbin (rd109@cam.ac.uk)
  *  Copyright (C) Richard Durbin, Cambridge University, 2018

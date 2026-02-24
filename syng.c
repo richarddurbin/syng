@@ -11,9 +11,10 @@
  */
 
 #include <pthread.h>
+#include <sys/stat.h>
 
 #include "seqio.h"
-#include "seqhash.h"
+#include "syncmer_iter.h"
 #include "syng.h"
 
 static OneSchema *schema ;
@@ -22,10 +23,11 @@ static OneSchema *schema ;
 
 typedef struct {
   Seqhash  *sh ;
-  KmerHash *kh ;        // read-only here
+  KmerHash *kh ;        // read-only for Find, concurrent insert for Add
   OneFile  *ofIn ;
   SyngBWT  *sbwt ;
   I64       nPath ;
+  bool      isAdd ;     // true: use CAS AddThreadSafe; false: use FindThreadSafe
   Array     seq ;	// of char, input: concatenated sequences in index 0..3
   	                // seq stores just the starts and ends if only those are required
   Array     seqInfo ;	// of SeqInfo: per sequence
@@ -56,10 +58,10 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
   int i ;
   I64 seqStart = 0 ;
   I64 sync ;
-  U64 *uBuf = new(ti->kh->plen,U64) ; // working buffer for threadsafe kmerHashFind
+  U64 *uBuf = new0(ti->kh->plen + 2, U64) ; // working buffer + batch state for threadsafe kmerHash ops
 
   arrayMax(ti->syncPos) = 0 ;
-  
+
   for (i = 0 ; i < arrayMax(ti->seqInfo) ; ++i)
     { I64 seqLen = arrp(ti->seqInfo, i, SeqInfo)->len ;
       char *seq = arrp(ti->seq, seqStart, char) ;
@@ -68,7 +70,10 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
       SeqhashIterator *sit = syncmerIterator (ti->sh, seq, seqLen) ;
       while (syncmerNext (sit, 0, &pos, 0))
 	{ sync = 0 ; // default if not found
-	  kmerHashFindThreadSafe (ti->kh, seq+pos, &sync, uBuf) ; // just do the threadsafe stuff here
+	  if (ti->isAdd)
+	    kmerHashAddThreadSafe (ti->kh, seq+pos, &sync, uBuf) ;
+	  else
+	    kmerHashFindThreadSafe (ti->kh, seq+pos, &sync, uBuf) ;
 	  if (sync > 2 || sync < -2 || !sync) // don't record poly-A, poly-C, poly-G, poly-T
 	    { SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
 	      sp->pos = pos ;
@@ -80,7 +85,7 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
       arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ; // ensure not used in output loop
     }
 
-  newFree (uBuf, ti->kh->plen, U64) ;
+  newFree (uBuf, ti->kh->plen + 2, U64) ;
   return 0 ;
 }
 
@@ -145,16 +150,14 @@ static void *threadProcessPaths (void* arg) // read in paths, make sequences if 
 	    break ;
 	  case 'X':
 	    if (si->nSync && oneLen(ti->ofIn) != sp->pos) die ("X error in threadProcessPaths %d", i) ;
-	    char *dna = oneDNAchar (ti->ofIn) ;
-	    for (j = 0 ; j < oneLen(ti->ofIn) ; ++j) seq[j] = dna2index4Conv[dna[j]] ;
+	    memcpy (seq, oneDNAchar(ti->ofIn), oneLen(ti->ofIn)) ;
 	    break ;
 	  case 'Y':
 	    if (si->nSync && oneLen(ti->ofIn) != si->len - (sp[si->nSync-1].pos + ti->kh->len))
 	      die ("Y error in threadProcessPaths %d nSync %d oneLen %d si->len %d pos %d len %d",
 		   i, si->nSync, oneLen(ti->ofIn), si->len, sp[si->nSync-1].pos, ti->kh->len) ;
-	    dna = oneDNAchar (ti->ofIn) ;
 	    int endLen = oneLen(ti->ofIn) ;
-	    for (j = 0 ; j < endLen ; ++j) seq[si->len-endLen+j] = dna2index4Conv[dna[j]] ;
+	    memcpy (seq + si->len - endLen, oneDNAchar(ti->ofIn), endLen) ;
 	    break ;
 	  }
       if (outType == SEQ) // build the sequence from the syncs
@@ -173,6 +176,7 @@ static void *threadProcessPaths (void* arg) // read in paths, make sequences if 
   
   return 0 ;
 }
+
 
 /************ start of package for sorting-based approach ************/
 
@@ -230,6 +234,28 @@ static void addSourceReferences (OneFile *of, char **sources)
   while (*sources) { oneAddReference (of, *sources, ++n) ; ++sources ; }
 }
 
+/******** estimate total input size for hash pre-sizing ********/
+
+static U64 estimateInputSize (int argc, char **argv)
+{
+  U64 totalSize = 0 ;
+  struct stat st ;
+  int i ;
+  for (i = 0 ; i < argc ; ++i)
+    { if (stat (argv[i], &st) == 0)
+        { U64 fileSize = st.st_size ;
+          // Check for compressed files and estimate 3x expansion
+          int len = strlen (argv[i]) ;
+          if (len > 3 && (!strcmp (argv[i]+len-3, ".gz") || !strcmp (argv[i]+len-3, ".bz")))
+            fileSize *= 3 ;
+          else if (len > 4 && !strcmp (argv[i]+len-4, ".bz2"))
+            fileSize *= 3 ;
+          totalSize += fileSize ;
+        }
+    }
+  return totalSize ;
+}
+
 /******** quadratic histogram package ********/
 
 static void qhist (Array a, FILE *f)
@@ -265,7 +291,6 @@ static char usage[] =
   "possible operations are:\n"
   "  -w <window length>     : [55] syncmer length = w + k\n"
   "  -k <smer length>       : [8] must be under 32\n"
-  "  -seed <seed>           : [7] for the hashing function\n"
   "  -T <threads>           : [8] number of threads\n"
   "  -o <outfile prefix>    : [syngOut] applies to all following write* options\n"
   "  -readK <.1khash file>  : read and start from this syncmer (khash) file\n"
@@ -318,7 +343,6 @@ int main (int argc, char *argv[])
   while (argc > 0 && **argv == '-')
     if (!strcmp (*argv, "-w") && argc > 1) { params.w = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
     else if (!strcmp (*argv, "-k") && argc > 1) { params.k = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
-    else if (!strcmp (*argv, "-seed") && argc > 1) { params.seed = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
     else if (!strcmp (*argv, "-T") && argc > 1) { nThread = atoi(argv[1]) ; argc -=2 ; argv +=2 ; }
     else if (!strcmp (*argv, "-readK") && argc > 1)
       { sms = syncmerSetRead (argv[1]) ; argc -= 2 ; argv +=2 ; }
@@ -397,15 +421,33 @@ int main (int argc, char *argv[])
     else if (!strcmp (*argv, "-FM")) { isFM = true ; --argc ; ++argv ; }
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
-  fprintf (stdout, "k, w, seed are %d %d %d\n", params.k, params.w, params.seed) ;
-  Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ; // need the +1 here, awkwardly
+  fprintf (stdout, "k, w are %d %d\n", params.k, params.w) ;
+  Seqhash *sh = seqhashCreate (params.k, params.w+1) ; // need the +1 here, awkwardly
 
   if (!sms)
-    { sms = syncmerSetCreate (params, 0) ;
+    { // Estimate unique syncmer count from first input file for hash pre-sizing
+      // Syncmer density is ~2/(w+1) per base, so ~1 per 28 bases for w=55
+      // Use 22 to account for FASTA headers taking some space
+      // Size for first file only: with multiple genomes most syncmers are shared
+      // Estimate from largest input file: unique syncmers scale with one genome,
+      // not total input. kmerHashResize() between chunks handles growth safely.
+      U64 maxFileSize = 0 ;
+      for (i = 0 ; i < argc ; ++i)
+	{ U64 fs = estimateInputSize (1, &argv[i]) ;
+	  if (fs > maxFileSize) maxFileSize = fs ;
+	}
+      U64 estSyncmers = maxFileSize / 22 ;
+      U64 initialSize = estSyncmers * 4 ; // 4x headroom for hash load factor
+      if (initialSize < (1<<20)) initialSize = 0 ; // use default minimum if small
+      sms = syncmerSetCreate (params, initialSize) ;
+      if (maxFileSize > 0)
+        fprintf (stdout, "estimated from largest file %llu bytes, pre-sized hash for ~%llu syncmers\n",
+                 maxFileSize, estSyncmers) ;
+      static const char sentinels[4] = { 'A', 'C', 'G', 'T' } ;
       char *s = new0 (sms->kh->len, char) ;
       for (i = 0 ; i < 4 ; ++i)
-	{ for (j = 0 ; j < sms->kh->len ; ++j) s[j] = i ;
-	  I64 sync ; kmerHashAdd (sms->kh, s, &sync) ; // 0,1,2,3 map to 1,2,-2,-1
+	{ for (j = 0 ; j < sms->kh->len ; ++j) s[j] = sentinels[i] ;
+	  I64 sync ; kmerHashAdd (sms->kh, s, &sync) ; // poly-A,C,G,T map to 1,2,-2,-1
 	}
       newFree (s, sms->kh->len, char) ;
     }
@@ -429,6 +471,7 @@ int main (int argc, char *argv[])
   for (i = 0 ; i < nThread ; ++i)
     { threadInfo[i].sh = sh ;
       threadInfo[i].kh = sms->kh ;
+      threadInfo[i].isAdd = isAddSyncmers ;
       threadInfo[i].seq = arrayCreate (101<<20, char) ; // 101 Mb
       threadInfo[i].seqInfo = arrayCreate (20000, SeqInfo) ;
       threadInfo[i].syncPos = arrayCreate (1<<20, SyncPos) ;
@@ -459,7 +502,7 @@ int main (int argc, char *argv[])
 	}
       else
 	{ if (ofIn) { oneFileClose (ofIn) ; ofIn = 0 ; }
-	  sio = seqIOopenRead (*argv, dna2index4Conv, 0) ;
+	  sio = seqIOopenRead (*argv, dna2textN2AConv, 0) ;
 	  if (!sio) die ("failed to open sequence file %s", *argv) ;
 	  ++nSource ; // each input sequence file is a source
 	  fprintf (stdout, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
@@ -488,32 +531,32 @@ int main (int argc, char *argv[])
 		pthread_create (&threads[i], 0, threadProcessSequences, &threadInfo[i]) ;
 	      for (i = 0 ; i < nThread ; ++i)
 		pthread_join (threads[i], 0) ; // wait for threads to complete
-	      for (i = 0 ; i < nThread ; ++i) // must go through threads linearly to add missing syncs
+	      // resize hash if nearing capacity (safe: single-threaded here)
+	      if (isAddSyncmers)
+		kmerHashResize (sms->kh) ;
+	      // ensure count arrays are large enough for any new CAS-inserted syncmers
+	      if (isAddSyncmers)
+		{ I64 curMax = kmerHashMax(sms->kh) ;
+		  if (curMax >= arrayMax(sms->count))
+		    { array(sms->count, curMax, I64) = 0 ;
+		      array(sms->thisCount, curMax, char) = 0 ;
+		    }
+		}
+	      // count syncmers and handle unknowns
+	      for (i = 0 ; i < nThread ; ++i)
 		{ ThreadInfo *ti = threadInfo + i ;
 		  SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
 		  char *seq = arrp(ti->seq, 0, char) ;
 		  totSync += arrayMax(ti->syncPos) ;
 		  for (j = 0 ; j < arrayMax(ti->seqInfo) ; ++j)
 		    { for (k = 0 ; k < arrp(ti->seqInfo, j, SeqInfo)->nSync ; ++k, ++sp)
-			if (sp->sync) // increment sms->count, because FindThreadSafe could not
+			if (sp->sync)
 			  syncmerCount (sms, sp->sync) ;
-			else if (isAddSyncmers)
-			  { I64 sync ;
-			    syncmerAdd (sms, seq + sp->pos, &sync) ;
-			    sp->sync = sync ;
-#ifdef ADD_DEBUG
-			    static int N = 10 ;
-			    SeqInfo *si = arrp(ti->seqInfo,j,SeqInfo) ;
-			    fprintf (stderr, "adding seq %lld pos %d (%lld) k %lld (%lld) %s\n",
-				     j, sp->pos, si->len, k, si->nSync, kmerHashSeq (kh,sync,0)) ;
-			    if (!--N) exit(1) ;
-#endif
-			  }
 			else if (smsNew)
 			  syncmerAdd (smsNew, seq + sp->pos, 0) ;
 		      seq += arrp(ti->seqInfo, j, SeqInfo)->len ;
-		    } // read
-		} // thread i
+		    }
+		}
 	      if (isDone) syncmerUpdateMaxCount (sms) ;
 	    } // sio - reading a sequence file
 	  else if (ofIn)
@@ -607,8 +650,15 @@ int main (int argc, char *argv[])
       ++argv ;
     } // source file
 
+  // compact CAS holes if any were created by concurrent inserts
+  if (isAddSyncmers)
+    { I64 nHoles = syncmerSetCompact (sms) ;
+      if (nHoles)
+	fprintf (stdout, "compacted %lld CAS holes from hash table\n", nHoles) ;
+    }
+
   fprintf (stdout, "Total for this run %llu sequences, total length %llu\n", nSeq, totSeq) ;
-  fprintf (stdout, "Overall total %llu instances of %llu syncmers, average %.2f coverage\n", 
+  fprintf (stdout, "Overall total %llu instances of %llu syncmers, average %.2f coverage\n",
 	   totSync, kmerHashMax(sms->kh), totSync / (double)kmerHashMax(sms->kh)) ;
 
   // destroy the thread objects

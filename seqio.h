@@ -118,6 +118,7 @@ SeqIO *seqIOadoptOneFile (void *handle, int* convert, int qualThresh) ;
 /* utility */
 
 char* seqRevComp (char *s, U64 len) ; /* reverse complements both index and text encodings */
+bool  isCanonical (char *dna, int len) ; /* true if dna < reverseComplement(dna) */
 
 /* standard converters - instantiated in seqio.c */
 
@@ -126,6 +127,7 @@ extern int dna2textAmbigConv[] ;
 extern int dna2textAmbig2NConv[] ;
 extern int dna2indexConv[] ;
 extern int dna2index4Conv[] ;
+extern int dna2textN2AConv[] ;
 extern int dna2binaryConv[] ;
 extern int dna2binaryAmbigConv[] ;
 static const char index2char[] = "acgtn" ;

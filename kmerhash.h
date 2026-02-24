@@ -47,10 +47,20 @@ bool      kmerHashFindThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf)
 bool      kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) ;
 bool      kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) ; // true if found
 // these versions add/find already packed and correctly oriented kmers
+bool      kmerHashAddThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf) ;
+// CAS-based concurrent insert; buf must be (kh->plen + 2) U64s, zero-initialized; may create holes in pack[]
+I64       kmerHashCompact (KmerHash *kh) ;
+// remove holes left by CAS races; returns number of holes removed
+void      kmerHashResize (KmerHash *kh) ;
+// call single-threaded between chunks to resize if near capacity
 
 char*     kmerHashSeq (KmerHash *kh, I64 i, char *buf) ; // retrieve i'th sequence (rev-comp if i < 0)
                                                          // buf can be 0, but then not thread-safe
+static inline void kmerHashPrefetch (KmerHash *kh, U64 *packed) // prefetch table entry for packed kmer
+{ __builtin_prefetch (&kh->table[*packed & kh->mask], 1, 1) ; }
+
 #define   kmerHashMax(kh)  ((kh)->max)      // number of stored kmers
+#define   packseq(kh,i)   ((kh)->pack + (i)*(kh)->plen)
 
 #ifdef ONE_DEFINED
 bool      kmerHashWriteOneFile (KmerHash *kh, OneFile *of) ;

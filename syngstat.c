@@ -11,7 +11,6 @@
  */
 
 #include "seqio.h"
-#include "seqhash.h"
 #include "syng.h"
 
 /**************** main program ********************/

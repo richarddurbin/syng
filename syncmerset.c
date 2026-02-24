@@ -18,7 +18,6 @@ SyncmerParams syncmerParamsDefault (void)
 { SyncmerParams p ;
   p.k = 8 ;
   p.w = 55 ;
-  p.seed = 7 ;
   return p ;
 }
 
@@ -26,7 +25,6 @@ void syncmerParamsWrite (OneFile *of, SyncmerParams p)
 {
   oneInt(of,0) = p.k ;
   oneInt(of,1) = p.w ;
-  oneInt(of,2) = p.seed ;
   oneWriteLine (of, 'h', 0, 0) ;
 }
 
@@ -34,9 +32,9 @@ SyncmerParams syncmerParamsRead (OneFile *of)
 { SyncmerParams p ;
   while (oneReadLine (of) && of->lineType != 'h') ;
   if (of->lineType != 'h') die ("sync file %s has no 'h' parameters record", oneFileName(of)) ;
-  p.k = oneInt(of,0) ; p.w = oneInt(of,1) ; p.seed = oneInt(of,2) ;
-  fprintf (stdout, "read syncmer parameters k %d w %d (size %d) seed %d\n",
-	   p.k, p.w, p.k + p.w, p.seed) ;
+  p.k = oneInt(of,0) ; p.w = oneInt(of,1) ;
+  fprintf (stdout, "read syncmer parameters k %d w %d (size %d)\n",
+	   p.k, p.w, p.k + p.w) ;
   return p ;
 }
 
@@ -44,10 +42,9 @@ void syncmerParamsCheck (OneFile *of, SyncmerParams p)
 {
   if (of->lineType != 'h') die ("syncmerParamsCheck called on a %c line not 'h'", of->lineType) ;
   if (oneInt(of,0) != p.k ||
-      oneInt(of,1) != p.w ||
-      oneInt(of,2) != p.seed)
-    die ("hash parameters mismatch: (k,w,s) file (%d,%d,%d) != code (%d,%d,%d)",
-	 oneInt(of,0), oneInt(of,1), oneInt(of,2), p.k, p.w, p.seed) ;
+      oneInt(of,1) != p.w)
+    die ("hash parameters mismatch: (k,w) file (%d,%d) != code (%d,%d)",
+	 oneInt(of,0), oneInt(of,1), p.k, p.w) ;
 }
 
 /*************** syncmerHash package built on kmerhash *****************/
@@ -84,6 +81,39 @@ void syncmerUpdateMaxCount (SyncmerSet *sms)
   memset (arrayp(sms->thisCount,0,char), 0, arrayMax(sms->thisCount)) ;
 }
 
+I64 syncmerSetCompact (SyncmerSet *sms)
+{ // remove holes in pack[] left by CAS races, remapping count arrays to match
+  KmerHash *kh = sms->kh ;
+  I64 maxOld = kh->max ;
+  I64 size = (I64)1 << kh->dim ;
+  I64 *remap = new0 (maxOld + 1, I64) ;
+  I64 i, newMax = 0 ;
+
+  for (i = 0 ; i < size ; ++i)
+    if (kh->table[i] > 0) remap[kh->table[i]] = 1 ;
+  for (i = 1 ; i <= maxOld ; ++i)
+    if (remap[i]) remap[i] = ++newMax ;
+
+  I64 nHoles = maxOld - newMax ;
+  if (nHoles > 0)
+    { // compact pack[] and count arrays together (remap[i] < i so forward scan is safe)
+      for (i = 1 ; i <= maxOld ; ++i)
+	if (remap[i] && remap[i] != i)
+	  { memcpy (packseq(kh, remap[i]), packseq(kh, i), kh->plen * sizeof(U64)) ;
+	    arr(sms->count, remap[i], I64) = arr(sms->count, i, I64) ;
+	    arr(sms->maxCount, remap[i], char) = arr(sms->maxCount, i, char) ;
+	  }
+      // remap table entries
+      for (i = 0 ; i < size ; ++i)
+	if (kh->table[i] > 0)
+	  kh->table[i] = remap[kh->table[i]] ;
+      kh->max = newMax ;
+    }
+
+  newFree (remap, maxOld + 1, I64) ;
+  return nHoles ;
+}
+
 // syncmerSetWrite takes *of not filename so can record sources in upstream file
 
 bool syncmerSetWrite (SyncmerSet *sms, OneFile *of) 
@@ -115,9 +145,9 @@ static char *schemaText =
   ".\n"
   "P 5 khash                 KMER HASH\n"
   "S 7 syncset               SYNCMER SET\n"
-  "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
+  "D h 2 3 INT 3 INT         k, w for the seqhash: k = |smer|, w+k = |syncmer|\n"
   "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
-  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
+  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n"
   "D L 1 8 INT_LIST          locations in the table\n"
   "D C 1 8 INT_LIST          kmer counts\n"
   "D M 1 6 STRING            maximum count in any input - (1..127)\n"

@@ -50,3 +50,20 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Project binaries
+syng
+syngmap
+syngstat
+syngprune
+k31type
+ONEview
+
+# Test outputs (TEST/test.fa is tracked input)
+TEST/*.1*
+TEST/gbwt.fa
+TEST/gbwt_orig.fa
+
+# Profiling
+perf.data
+perf.data.old
