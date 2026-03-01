@@ -18,6 +18,7 @@ SyncmerParams syncmerParamsDefault (void)
 { SyncmerParams p ;
   p.k = 8 ;
   p.w = 55 ;
+  p.seed = 7 ;
   return p ;
 }
 
@@ -25,6 +26,7 @@ void syncmerParamsWrite (OneFile *of, SyncmerParams p)
 {
   oneInt(of,0) = p.k ;
   oneInt(of,1) = p.w ;
+  oneInt(of,2) = p.seed ;
   oneWriteLine (of, 'h', 0, 0) ;
 }
 
@@ -32,9 +34,9 @@ SyncmerParams syncmerParamsRead (OneFile *of)
 { SyncmerParams p ;
   while (oneReadLine (of) && of->lineType != 'h') ;
   if (of->lineType != 'h') die ("sync file %s has no 'h' parameters record", oneFileName(of)) ;
-  p.k = oneInt(of,0) ; p.w = oneInt(of,1) ;
-  fprintf (stdout, "read syncmer parameters k %d w %d (size %d)\n",
-	   p.k, p.w, p.k + p.w) ;
+  p.k = oneInt(of,0) ; p.w = oneInt(of,1) ; p.seed = oneInt(of,2) ;
+  fprintf (stdout, "read syncmer parameters k %d w %d (size %d) seed %d\n",
+	   p.k, p.w, p.k + p.w, p.seed) ;
   return p ;
 }
 
@@ -42,9 +44,10 @@ void syncmerParamsCheck (OneFile *of, SyncmerParams p)
 {
   if (of->lineType != 'h') die ("syncmerParamsCheck called on a %c line not 'h'", of->lineType) ;
   if (oneInt(of,0) != p.k ||
-      oneInt(of,1) != p.w)
-    die ("hash parameters mismatch: (k,w) file (%d,%d) != code (%d,%d)",
-	 oneInt(of,0), oneInt(of,1), p.k, p.w) ;
+      oneInt(of,1) != p.w ||
+      oneInt(of,2) != p.seed)
+    die ("hash parameters mismatch: (k,w,s) file (%d,%d,%d) != code (%d,%d,%d)",
+	 oneInt(of,0), oneInt(of,1), oneInt(of,2), p.k, p.w, p.seed) ;
 }
 
 /*************** syncmerHash package built on kmerhash *****************/
@@ -145,7 +148,7 @@ static char *schemaText =
   ".\n"
   "P 5 khash                 KMER HASH\n"
   "S 7 syncset               SYNCMER SET\n"
-  "D h 2 3 INT 3 INT         k, w for the seqhash: k = |smer|, w+k = |syncmer|\n"
+  "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
   "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
   "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n"
   "D L 1 8 INT_LIST          locations in the table\n"

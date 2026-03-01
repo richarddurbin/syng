@@ -65,6 +65,25 @@ static inline void kmerHashPrefetch (KmerHash *kh, U64 *packed) // prefetch tabl
 #define   kmerHashMax(kh)  ((kh)->max)      // number of stored kmers
 #define   packseq(kh,i)   ((kh)->pack + (i)*(kh)->plen)
 
+// Two-level prefetch helpers: Stage B reads table and prefetches pack; Stage C checks match
+static inline I64 kmerHashPrefetchPack (KmerHash *kh, U64 *packed)
+{ U64 loc = packed[0] & kh->mask ;
+  I64 x = kh->table[loc] ;
+  if (x > 0) __builtin_prefetch (packseq(kh, x), 0, 0) ;
+  return x ;
+}
+
+static inline bool kmerHashMatchAt (KmerHash *kh, U64 *packed, I64 tableVal)
+{ if (tableVal <= 0) return false ;
+  U64 *v = packseq(kh, tableVal) ;
+  int n = kh->plen ;
+  switch (n)
+    { case 1: return packed[0] == v[0] ;
+      case 2: return packed[0] == v[0] && packed[1] == v[1] ;
+      default: while (n--) if (*packed++ != *v++) return false ; return true ;
+    }
+}
+
 #ifdef ONE_DEFINED
 bool      kmerHashWriteOneFile (KmerHash *kh, OneFile *of) ;
 KmerHash *kmerHashReadOneFile (OneFile *of) ;

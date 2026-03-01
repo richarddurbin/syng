@@ -57,7 +57,7 @@ static char *syngSchemaText =
   "S 3 gfa                   sequence graph - contains V (vertex) objects, probably with E lines\n"
   "S 4 gbwt                  gbwt: a gfa with B, C, Z lines\n"
   ".\n"
-  "D h 2 3 INT 3 INT         k, w for the seqhash: k = |smer|, w+k = |syncmer|\n"
+  "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
   ".\n"
   "O S 1 3 DNA               sequence of the node\n" // for the future, for general GFA
   ".\n"
@@ -79,7 +79,7 @@ static char *syngSchemaText =
   ".\n"
   "P 5 khash                 KMER HASH\n"
   "S 7 syncset               SYNCMER SET\n"
-  "D h 2 3 INT 3 INT         k, w for the seqhash: k = |smer|, w+k = |syncmer|\n"
+  "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
   "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
   "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n"
   "D L 1 8 INT_LIST          locations in the table\n"

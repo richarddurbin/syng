@@ -1172,8 +1172,8 @@ static inline size_t FUNC_NAME(                                                \
     size_t num_smers = length - S + 1;                                         \
     size_t num_kmers = num_smers - window_size + 1;                            \
                                                                                \
-    /* Fall back to scalar for small inputs or large windows */                \
-    if (num_kmers < 64 || window_size > 64) {                                 \
+    /* Fall back to scalar for small inputs */                                 \
+    if (num_kmers < 64) {                                 \
         if (CANONICAL) {                                                       \
             if (COLLECT_POSITIONS) {                                           \
                 return csyncmer_canonical_rescan_32_(                           \
@@ -1300,7 +1300,9 @@ static inline size_t FUNC_NAME(                                                \
     size_t wr_idx = 0, rd_idx = 0;                                            \
                                                                                \
     /* Two-stack: [hash upper 16 bits][position lower 16 bits] */              \
-    alignas(32) __m256i ring_buf[64];                                          \
+    __m256i *ring_buf = (__m256i *)aligned_alloc(32,                            \
+        window_size * sizeof(__m256i));                                        \
+    if (!ring_buf) { free(delay_buf); free(packed); return 0; }               \
     for (size_t i = 0; i < window_size; i++)                                   \
         ring_buf[i] = _mm256_set1_epi32((int)UINT32_MAX);                     \
     __m256i prefix_min = _mm256_set1_epi32((int)UINT32_MAX);                   \
@@ -1308,9 +1310,12 @@ static inline size_t FUNC_NAME(                                                \
     __m256i pos_mask = _mm256_set1_epi32(0x0000FFFF);                          \
                                                                                \
     /* Canonical + positions: strand tracking */                               \
-    alignas(32) uint8_t strand_ring[64];                                       \
+    uint8_t *strand_ring = NULL;                                               \
     uint8_t prefix_strand = 0;                                                 \
     if (CANONICAL && COLLECT_POSITIONS) {                                       \
+        strand_ring = (uint8_t *)aligned_alloc(32, window_size);              \
+        if (!strand_ring) { free(ring_buf); free(delay_buf);                  \
+                            free(packed); return 0; }                          \
         for (size_t i = 0; i < window_size; i++) strand_ring[i] = 0;          \
     }                                                                          \
                                                                                \
@@ -1671,6 +1676,8 @@ static inline size_t FUNC_NAME(                                                \
         syncmer_count = total;                                                 \
     }                                                                          \
                                                                                \
+    free(ring_buf);                                                            \
+    free(strand_ring);                                                         \
     free(delay_buf);                                                           \
     free(packed);                                                              \
     return syncmer_count;                                                      \

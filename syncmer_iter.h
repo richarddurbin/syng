@@ -24,6 +24,7 @@ typedef struct {
   uint8_t  *batch_strands ;             /* AVX2 batch: strand flags */
   size_t    batch_count ;               /* AVX2 batch: number of syncmers found */
   size_t    batch_index ;               /* AVX2 batch: current iteration index */
+  size_t    batch_capacity ;            /* allocated capacity of batch buffers */
   bool isDone ;
 } SeqhashIterator ;
 
@@ -41,6 +42,7 @@ void seqhashReport (Seqhash *sh, FILE *f) ;
 // these provide a cover, and have good distribution properties
 // Now uses ntHash64 via csyncmer_fast.h
 SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len) ;
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len) ;
 bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 
 static void seqhashIteratorDestroy (SeqhashIterator *si)

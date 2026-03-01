@@ -1,6 +1,9 @@
 # makefile for gaffer developed on Richard's Mac
 
-CFLAGS = -O3
+CFLAGS = -O3 -g
+ifdef CSYNCMER
+CFLAGS += -DUSE_CSYNCMER
+endif
 ifdef AVX2
 CFLAGS += -DHAVE_AVX2
 CFLAGS_AVX2 = -march=native -mavx2
@@ -39,15 +42,27 @@ endif
 seqio.o: seqio.c seqio.h ONElib.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(SEQIO_OPTS) -c $^
 
-seqhash.o: seqhash.c seqhash.h $(UTILS_HEADERS)
-	$(CC) $(CFLAGS) -c $^
-
+ifdef CSYNCMER
 ifdef AVX2
 syncmer_iter.o: avx2.c avx2.h syncmer_iter.h csyncmer_fast.h seqio.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(CFLAGS_AVX2) -c $< -o syncmer_iter.o
 else
-syncmer_iter.o: syncmer_iter.c syncmer_iter.h $(UTILS_HEADERS)
-	$(CC) $(CFLAGS) -c $^
+syncmer_iter.o: syncmer_iter.c syncmer_iter.h csyncmer_fast.h $(UTILS_HEADERS)
+	$(CC) $(CFLAGS) -c $< -o syncmer_iter.o
+endif
+else
+# default: seqhash (Durbin's seeded hash)
+syncmer_iter.o: seqhash.c seqhash.h $(UTILS_HEADERS)
+	$(CC) $(CFLAGS) -c $< -o syncmer_iter.o
+endif
+
+# AVX2 helpers as separate object (seqhash + AVX2)
+ifdef AVX2
+ifndef CSYNCMER
+avx2.o: avx2.c avx2.h seqio.h $(UTILS_HEADERS)
+	$(CC) $(CFLAGS) $(CFLAGS_AVX2) -DAVX2_HELPERS_ONLY -c $<
+LINK_AVX2 = avx2.o
+endif
 endif
 
 kmerhash.o: kmerhash.c kmerhash.h $(UTILS_HEADERS)
@@ -64,22 +79,22 @@ ONElib.o: ONElib.c ONElib.h
 
 ### programs
 
-syng: syng.c syngbwt.o syncmerset.o seqio.o syncmer_iter.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syng: syng.c syngbwt.o syncmerset.o seqio.o syncmer_iter.o kmerhash.o ONElib.o $(UTILS_OBJS) $(LINK_AVX2)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
-syngmap: syngmap.c syngbwt.o seqio.o syncmer_iter.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syngmap: syngmap.c syngbwt.o seqio.o syncmer_iter.o kmerhash.o ONElib.o $(UTILS_OBJS) $(LINK_AVX2)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
 syngstat: syngstat.c syngbwt.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lz -lpthread
 
-syngprune: syngprune.c seqio.o syncmer_iter.o ONElib.o $(UTILS_OBJS)
+syngprune: syngprune.c seqio.o syncmer_iter.o ONElib.o $(UTILS_OBJS) $(LINK_AVX2)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
 
 syngbwt: syngbwt.c syng.h seqio.o syncmer_iter.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS) syngbwt.o
 
-k31type: k31type.c seqio.o syncmer_iter.o ONElib.o $(UTILS_OBJS)
+k31type: k31type.c seqio.o syncmer_iter.o ONElib.o $(UTILS_OBJS) $(LINK_AVX2)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
 
 

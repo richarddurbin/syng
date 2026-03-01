@@ -16,7 +16,7 @@
 #include "kmerhash.h"
 
 typedef struct {
-  int w, k ;
+  int w, k, seed ;
 } SyncmerParams ;
 
 SyncmerParams syncmerParamsDefault (void) ;

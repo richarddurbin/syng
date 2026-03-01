@@ -137,7 +137,6 @@ static void doubleTable (KmerHash *kh)
   kh->table = newTable ;
   kh->pack = newResize (kh->pack, kh->plen*kh->psize, 2*kh->plen*kh->psize, U64) ;
   kh->psize *= 2 ;
-  // printf ("doubled at max = %llu to %llu\n", kh->max, kh->psize) ;
 }
 
 bool kmerHashAdd (KmerHash *kh, char *dna, I64 *index)
@@ -278,7 +277,7 @@ bool kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC)
 
 void kmerHashResize (KmerHash *kh)
 { // call single-threaded (e.g. between chunks) to resize if near capacity
-  if (kh->max >= (I64)(kh->psize * 0.7))
+  if (kh->max >= (I64)(kh->psize * 0.9))
     { fprintf (stdout, "  resizing hash table at %lld entries (%.0f%% full)\n",
 	       kh->max, 100.0 * kh->max / kh->psize) ;
       doubleTable (kh) ;

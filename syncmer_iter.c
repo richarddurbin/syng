@@ -47,17 +47,19 @@ SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len)
   si->sh = sh ;
   si->s = s ;
 
-  // Check minimum length for syncmers (need at least K = w + k bases)
-  if (len < sh->w + sh->k) {
+  // Check minimum length for syncmers (need at least K = w + k - 1 bases)
+  // K-mer length = sh->w + sh->k - 1 = params.w + params.k = kh->len
+  // (sh->w is params.w + 1 due to the +1 at seqhashCreate)
+  int K = sh->w + sh->k - 1 ;
+  if (len < K) {
     si->isDone = true ;
     si->iter = NULL ;
     return si ;
   }
 
   // Create csyncmer_fast canonical iterator (expects ASCII input)
-  // K = syncmer length = w + k
-  // S = smer size = k
-  si->iter = csyncmer_iterator_create_canonical_64 (s, (size_t)len, (size_t)(sh->w + sh->k), (size_t)sh->k) ;
+  // K = syncmer length, S = smer size = k
+  si->iter = csyncmer_iterator_create_canonical_64 (s, (size_t)len, (size_t)K, (size_t)sh->k) ;
   if (!si->iter) {
     si->isDone = true ;
     return si ;
@@ -65,6 +67,28 @@ SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len)
 
   si->isDone = false ;
   return si ;
+}
+
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len)
+{
+  Seqhash *sh = si->sh ;
+  si->s = s ;
+
+  if (si->iter) { csyncmer_iterator_destroy_canonical_64 (si->iter) ; si->iter = NULL ; }
+
+  int K = sh->w + sh->k - 1 ;
+  if (len < K) {
+    si->isDone = true ;
+    return ;
+  }
+
+  si->iter = csyncmer_iterator_create_canonical_64 (s, (size_t)len, (size_t)K, (size_t)sh->k) ;
+  if (!si->iter) {
+    si->isDone = true ;
+    return ;
+  }
+
+  si->isDone = false ;
 }
 
 bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF)

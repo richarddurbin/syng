@@ -13,6 +13,9 @@
  */
 
 #include "utils.h"
+#ifdef HAVE_AVX2
+#include "avx2.h"
+#endif
 
 typedef struct {
   int seed ;			/* seed */
@@ -51,7 +54,8 @@ SeqhashIterator *seqhashIterator (Seqhash *sh, char *s, int len) ;
 bool seqhashNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 
 static void seqhashIteratorDestroy (SeqhashIterator *si)
-{ free (si->hash) ; free (si->isForward) ; free (si) ; }
+{ free (si->hash) ; free (si->isForward) ;
+  free (si) ; }
 
 // iterator to extract minimizers from a sequence
 // NB sequence must continue to exist through the life of the iterator
@@ -66,6 +70,7 @@ bool modNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 // (closed) syncmer extracts w-mers that end with a minimal kmer
 // these provide a cover, and have good distribution properties
 SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len) ;
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len) ;
 bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 
 // utilities

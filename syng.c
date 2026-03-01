@@ -14,7 +14,11 @@
 #include <sys/stat.h>
 
 #include "seqio.h"
+#ifdef USE_CSYNCMER
 #include "syncmer_iter.h"
+#else
+#include "seqhash.h"
+#endif
 #include "syng.h"
 
 static OneSchema *schema ;
@@ -52,7 +56,9 @@ static OutType outType = NONE ;
 
 /***** threadProcessSequences() handles input from SeqIO: maps sequences to sync,pos *****/
 
-#define PF_DIST 16
+#define PF_DIST  16
+#define PF_DIST2  8
+#define PF_TOTAL (PF_DIST + PF_DIST2)
 
 static void *threadProcessSequences (void* arg) // find the start positions of all the syncmers
 {
@@ -62,25 +68,28 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
   KmerHash *kh = ti->kh ;
   int plen = kh->plen ;
 
-  // Pipeline buffers: per-slot packed kmer, position, orientation
-  U64  *pipePack = new0(PF_DIST * plen, U64) ;
-  int   pipePos[PF_DIST] ;
-  bool  pipeIsRC[PF_DIST] ;
+  // Pipeline buffers: per-slot packed kmer, position, orientation, pre-read table value
+  U64  *pipePack = new0(PF_TOTAL * plen, U64) ;
+  int   pipePos[PF_TOTAL] ;
+  bool  pipeIsRC[PF_TOTAL] ;
+  I64   pipeTableVal[PF_TOTAL] ;
   I64   batchState[2] = {0, 0} ; // batch ID state shared across all insertions in this thread
 
   arrayMax(ti->syncPos) = 0 ;
 
+  SeqhashIterator *sit = NULL ;
   for (i = 0 ; i < arrayMax(ti->seqInfo) ; ++i)
     { I64 seqLen = arrp(ti->seqInfo, i, SeqInfo)->len ;
       char *seq = arrp(ti->seq, seqStart, char) ;
       seqStart += seqLen ;
       int pos, spStart = arrayMax(ti->syncPos) ;
-      SeqhashIterator *sit = syncmerIterator (ti->sh, seq, seqLen) ;
+      if (!sit) sit = syncmerIterator (ti->sh, seq, seqLen) ;
+      else syncmerIteratorReinit (sit, seq, seqLen) ;
 
-      // Phase 1: fill pipeline with first PF_DIST entries
+      // Phase 1: fill pipeline with PF_TOTAL entries (Stage A: pack + prefetch table)
       int nFilled = 0 ;
       bool hasMore = true ;
-      while (nFilled < PF_DIST && syncmerNext (sit, 0, &pos, 0))
+      while (nFilled < PF_TOTAL && syncmerNext (sit, 0, &pos, 0))
 	{ int slot = nFilled ;
 	  pipePos[slot] = pos ;
 	  pipeIsRC[slot] = !isCanonical (seq+pos, kh->len) ;
@@ -90,44 +99,61 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
 	  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
 	  nFilled++ ;
 	}
-      if (nFilled < PF_DIST) hasMore = false ;
+      if (nFilled < PF_TOTAL) hasMore = false ;
 
-      // Phase 2: process oldest entry (prefetched PF_DIST iterations ago), refill slot
+      // Phase 2: Stage B for first min(nFilled,PF_DIST2) items (read table, prefetch pack)
+      int nB = nFilled < PF_DIST2 ? nFilled : PF_DIST2 ;
+      for (int b = 0 ; b < nB ; ++b)
+	pipeTableVal[b] = kmerHashPrefetchPack (kh, pipePack + b * plen) ;
+
+      // Phase 3: main loop - three stages per iteration
       int nProcessed = 0 ;
       while (nProcessed < nFilled)
-	{ int slot = nProcessed % PF_DIST ;
-	  U64 *pk = pipePack + slot * plen ;
+	{ int slotC = nProcessed % PF_TOTAL ;
+	  U64 *pkC = pipePack + slotC * plen ;
+
+	  // Stage C: check pre-read table value against packed kmer (pack now in cache)
 	  I64 sync = 0 ;
-	  if (ti->isAdd)
-	    kmerHashAddPackedThreadSafe (kh, pk, &sync, pipeIsRC[slot], batchState) ;
-	  else
-	    kmerHashFindPackedThreadSafe (kh, pk, &sync, pipeIsRC[slot]) ;
+	  if (kmerHashMatchAt (kh, pkC, pipeTableVal[slotC]))
+	    sync = pipeIsRC[slotC] ? -pipeTableVal[slotC] : pipeTableVal[slotC] ;
+	  else if (ti->isAdd)
+	    kmerHashAddPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC], batchState) ;
+	  else if (pipeTableVal[slotC] > 0) // collision in find mode: continue probing
+	    kmerHashFindPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC]) ;
 	  if (sync > 2 || sync < -2 || !sync)
 	    { SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
-	      sp->pos = pipePos[slot] ;
+	      sp->pos = pipePos[slotC] ;
 	      sp->sync = sync ;
 	    }
-	  nProcessed++ ;
-	  // Refill this slot with next syncmer
+
+	  // Stage B: read table + prefetch pack for item PF_DIST2 ahead
+	  int bIdx = nProcessed + PF_DIST2 ;
+	  if (bIdx < nFilled)
+	    { int slotB = bIdx % PF_TOTAL ;
+	      pipeTableVal[slotB] = kmerHashPrefetchPack (kh, pipePack + slotB * plen) ;
+	    }
+
+	  // Stage A: pack + prefetch table for new item (reuse freed slot)
 	  if (hasMore)
 	    { if (syncmerNext (sit, 0, &pos, 0))
-		{ pipePos[slot] = pos ;
-		  pipeIsRC[slot] = !isCanonical (seq+pos, kh->len) ;
-		  pk = pipePack + slot * plen ;
-		  if (pipeIsRC[slot]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+		{ pipePos[slotC] = pos ;
+		  pipeIsRC[slotC] = !isCanonical (seq+pos, kh->len) ;
+		  U64 *pk = pipePack + slotC * plen ;
+		  if (pipeIsRC[slotC]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
 		  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
 		  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
 		  nFilled++ ;
 		}
 	      else hasMore = false ;
 	    }
+	  nProcessed++ ;
 	}
-      seqhashIteratorDestroy (sit) ;
       arrp(ti->seqInfo, i, SeqInfo)->nSync = arrayMax(ti->syncPos) - spStart ;
       arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ; // ensure not used in output loop
     }
+  if (sit) seqhashIteratorDestroy (sit) ;
 
-  newFree (pipePack, PF_DIST * plen, U64) ;
+  newFree (pipePack, PF_TOTAL * plen, U64) ;
   return 0 ;
 }
 
@@ -326,6 +352,8 @@ static void qhist (Array a, FILE *f)
     }
 }
 
+#include "batch.h"  // fillBatch, postProcessBatch, outputBatch
+
 /**************** main program ********************/
 
 static char usage[] =
@@ -364,7 +392,6 @@ int main (int argc, char *argv[])
   char       *kFaFileName = 0 ;
   int         nThread = 8 ;
   pthread_t  *threads ;
-  ThreadInfo *threadInfo ;
   SyncmerSet *sms = 0, *smsNew = 0 ;
   OneFile    *ofK = 0, *ofNewK = 0, *ofOut = 0 ;
   SyngBWT    *gbwtOut = 0 ;
@@ -464,28 +491,48 @@ int main (int argc, char *argv[])
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   fprintf (stdout, "k, w are %d %d\n", params.k, params.w) ;
+#ifdef USE_CSYNCMER
   Seqhash *sh = seqhashCreate (params.k, params.w+1) ; // need the +1 here, awkwardly
+#else
+  Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ;
+#endif
 
   if (!sms)
-    { // Estimate unique syncmer count from first input file for hash pre-sizing
-      // Syncmer density is ~2/(w+1) per base, so ~1 per 28 bases for w=55
-      // Use 22 to account for FASTA headers taking some space
-      // Size for first file only: with multiple genomes most syncmers are shared
-      // Estimate from largest input file: unique syncmers scale with one genome,
-      // not total input. kmerHashResize() between chunks handles growth safely.
+    { // Estimate unique syncmer count from largest input file for hash pre-sizing
+      // Syncmer density is ~2/(w+1) per base
+      // FASTA has ~1.1 bytes/base → bytes_per_syncmer ≈ 0.55*(w+1), use 11*(w+1)/28 for headroom
+      // FASTQ has ~4 bytes/base → bytes_per_syncmer ≈ 2*(w+1), use 11*(w+1)/7 for headroom
+      // kmerHashResize() between chunks handles growth if estimate is too low.
       U64 maxFileSize = 0 ;
+      bool isFastq = false ;
       for (i = 0 ; i < argc ; ++i)
 	{ U64 fs = estimateInputSize (1, &argv[i]) ;
 	  if (fs > maxFileSize) maxFileSize = fs ;
+	  int len = strlen (argv[i]) ;
+	  if ((len > 3 && !strcmp (argv[i]+len-3, ".fq")) ||
+	      (len > 6 && (!strcmp (argv[i]+len-6, ".fq.gz") || !strcmp (argv[i]+len-6, ".fastq"))) ||
+	      (len > 9 && !strcmp (argv[i]+len-9, ".fastq.gz")))
+	    isFastq = true ;
 	}
-      U64 estSyncmers = maxFileSize / 22 ;
+      U64 bytesPerSyncmer = (isFastq ? 11 : 11) * ((U64)params.w + 1) / (isFastq ? 7 : 28) ;
+      if (bytesPerSyncmer < 1) bytesPerSyncmer = 1 ;
+      U64 estSyncmers = maxFileSize / bytesPerSyncmer ;
       U64 initialSize = estSyncmers * 4 ; // 4x headroom for hash load factor
+      // Cap pre-sizing so pack array doesn't exceed ~16 GB
+      U64 plen = (params.w + params.k + 31) >> 5 ;
+      U64 maxPsize = ((U64)16 << 30) / (plen * 8) ;
+      if (initialSize > maxPsize * 3)   // psize = size * 0.3, so size = psize/0.3 ~= psize*3
+	initialSize = maxPsize * 3 ;
       if (initialSize < (1<<20)) initialSize = 0 ; // use default minimum if small
       sms = syncmerSetCreate (params, initialSize) ;
       if (maxFileSize > 0)
         fprintf (stdout, "estimated from largest file %llu bytes, pre-sized hash for ~%llu syncmers\n",
                  maxFileSize, estSyncmers) ;
+#ifdef USE_CSYNCMER
       static const char sentinels[4] = { 'A', 'C', 'G', 'T' } ;
+#else
+      static const char sentinels[4] = { 0, 1, 2, 3 } ;
+#endif
       char *s = new0 (sms->kh->len, char) ;
       for (i = 0 ; i < 4 ; ++i)
 	{ for (j = 0 ; j < sms->kh->len ; ++j) s[j] = sentinels[i] ;
@@ -509,14 +556,17 @@ int main (int argc, char *argv[])
 
   if (nThread < 1) die ("number of threads %d must be at least 1", nThread) ;
   threads = new (nThread, pthread_t) ;
-  threadInfo = new0 (nThread, ThreadInfo) ;
-  for (i = 0 ; i < nThread ; ++i)
-    { threadInfo[i].sh = sh ;
-      threadInfo[i].kh = sms->kh ;
-      threadInfo[i].isAdd = isAddSyncmers ;
-      threadInfo[i].seq = arrayCreate (101<<20, char) ; // 101 Mb
-      threadInfo[i].seqInfo = arrayCreate (20000, SeqInfo) ;
-      threadInfo[i].syncPos = arrayCreate (1<<20, SyncPos) ;
+  ThreadInfo *tiBuf[2] ;
+  for (int s = 0 ; s < 2 ; ++s)
+    { tiBuf[s] = new0 (nThread, ThreadInfo) ;
+      for (i = 0 ; i < nThread ; ++i)
+        { tiBuf[s][i].sh = sh ;
+          tiBuf[s][i].kh = sms->kh ;
+          tiBuf[s][i].isAdd = isAddSyncmers ;
+          tiBuf[s][i].seq = arrayCreate (101<<20, char) ; // 101 Mb
+          tiBuf[s][i].seqInfo = arrayCreate (20000, SeqInfo) ;
+          tiBuf[s][i].syncPos = arrayCreate (1<<20, SyncPos) ;
+        }
     }
 
   int nFile = 0 ;
@@ -532,19 +582,23 @@ int main (int argc, char *argv[])
 	  oneReadLine (ofIn) ; if (ofIn->lineType == 'h') syncmerParamsCheck (ofIn, params) ;
 	  I64 z ;
 	  if (oneStats (ofIn, 'Z', &z, 0, 0) && z) // must have a GBWT
-	    { threadInfo->sbwt = syngBWTread (ofIn) ;
-	      if (isFM) syngBWTtoFM (threadInfo->sbwt) ;
+	    { tiBuf[0]->sbwt = syngBWTread (ofIn) ;
+	      if (isFM) syngBWTtoFM (tiBuf[0]->sbwt) ;
 	    }
 	  for (i = 0 ; i < nThread ; ++i)
-	    { threadInfo[i].ofIn = ofIn+i ;
+	    { tiBuf[0][i].ofIn = ofIn+i ;
 	      oneGoto (ofIn+i, 'P', 1 + (nPath * i) / nThread) ;
-	      threadInfo[i].nPath = (nPath*(i+1))/nThread - (nPath*i)/nThread ;
-	      threadInfo[i].sbwt = threadInfo->sbwt ; // copy from the master
+	      tiBuf[0][i].nPath = (nPath*(i+1))/nThread - (nPath*i)/nThread ;
+	      tiBuf[0][i].sbwt = tiBuf[0]->sbwt ; // copy from the master
 	    }
 	}
       else
 	{ if (ofIn) { oneFileClose (ofIn) ; ofIn = 0 ; }
+#ifdef USE_CSYNCMER
 	  sio = seqIOopenRead (*argv, dna2textN2AConv, 0) ;
+#else
+	  sio = seqIOopenRead (*argv, dna2index4Conv, 0) ;
+#endif
 	  if (!sio) die ("failed to open sequence file %s", *argv) ;
 	  ++nSource ; // each input sequence file is a source
 	  fprintf (stdout, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
@@ -552,127 +606,35 @@ int main (int argc, char *argv[])
       if (!ofIn && !sio)
 	die ("failed to open sequence or path file %s", *argv) ;
       fflush (stdout) ;
-      bool isDone = false ;
-      while (!isDone) // read this file
-	{ if (sio)
-	    { for (i = 0 ; i < nThread ; ++i)  // read 100Mb DNA per thread and find kmers in parallel
-		{ ThreadInfo *ti = &threadInfo[i] ;
-		  arrayMax(ti->seq) = 0 ;
-		  arrayMax(ti->seqInfo) = 0 ;
-		  int seqStart = 0 ;
-		  while (arrayMax(ti->seq) < 100<<20 && seqIOread (sio))
-		    { arrayp(ti->seqInfo, arrayMax(ti->seqInfo), SeqInfo)->len = sio->seqLen ;
-		      array(ti->seq, seqStart+sio->seqLen, char) = 0 ;
-		      memcpy (arrp(ti->seq, seqStart, char), sqioSeq(sio), sio->seqLen) ;
-		      seqStart += sio->seqLen ;
-		      totSeq += sio->seqLen ;
-		    }
-		  if (!arrayMax(ti->seq)) isDone = true ; // we are done after processing this lot
-		} // loading thread
-	      for (i = 0 ; i < nThread ; ++i) // create threads
-		pthread_create (&threads[i], 0, threadProcessSequences, &threadInfo[i]) ;
+      if (sio)
+	{ // Double-buffered: fill next batch while threads process current batch
+	  int cur = 0 ;
+	  U64 batchFilled = fillBatch (sio, tiBuf[cur], nThread, &totSeq) ;
+	  while (batchFilled > 0)
+	    { for (i = 0 ; i < nThread ; ++i)
+		pthread_create (&threads[i], 0, threadProcessSequences, &tiBuf[cur][i]) ;
+	      int nxt = 1 - cur ;
+	      U64 nxtFilled = fillBatch (sio, tiBuf[nxt], nThread, &totSeq) ;
 	      for (i = 0 ; i < nThread ; ++i)
-		pthread_join (threads[i], 0) ; // wait for threads to complete
-	      // resize hash if nearing capacity (safe: single-threaded here)
-	      if (isAddSyncmers)
-		kmerHashResize (sms->kh) ;
-	      // ensure count arrays are large enough for any new CAS-inserted syncmers
-	      if (isAddSyncmers)
-		{ I64 curMax = kmerHashMax(sms->kh) ;
-		  if (curMax >= arrayMax(sms->count))
-		    { array(sms->count, curMax, I64) = 0 ;
-		      array(sms->thisCount, curMax, char) = 0 ;
-		    }
-		}
-	      // count syncmers and handle unknowns
-	      for (i = 0 ; i < nThread ; ++i)
-		{ ThreadInfo *ti = threadInfo + i ;
-		  SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
-		  char *seq = arrp(ti->seq, 0, char) ;
-		  totSync += arrayMax(ti->syncPos) ;
-		  for (j = 0 ; j < arrayMax(ti->seqInfo) ; ++j)
-		    { for (k = 0 ; k < arrp(ti->seqInfo, j, SeqInfo)->nSync ; ++k, ++sp)
-			if (sp->sync)
-			  syncmerCount (sms, sp->sync) ;
-			else if (smsNew)
-			  syncmerAdd (smsNew, seq + sp->pos, 0) ;
-		      seq += arrp(ti->seqInfo, j, SeqInfo)->len ;
-		    }
-		}
-	      if (isDone) syncmerUpdateMaxCount (sms) ;
-	    } // sio - reading a sequence file
-	  else if (ofIn)
-	    { for (i = 0 ; i < nThread ; ++i) // create threads
-		pthread_create (&threads[i], 0, threadProcessPaths, &threadInfo[i]) ;
-	      for (i = 0 ; i < nThread ; ++i)
-		pthread_join (threads[i], 0) ; // wait for threads to complete
-	      isDone = true ; // do each file in one go
+		pthread_join (threads[i], 0) ;
+	      postProcessBatch (tiBuf[cur], nThread, sms, smsNew,
+				isAddSyncmers, nxtFilled == 0) ;
+	      outputBatch (tiBuf[cur], nThread, ofOut, gbwtOut,
+			   sms->kh->len, isOutputEnds,
+			   &nSeq, &nSeq0, &nSource, &totSync) ;
+	      cur = nxt ;
+	      batchFilled = nxtFilled ;
 	    }
-
-	  // now the output
-	  
-	  for (i = 0 ; i < nThread ; ++i) // go through threads and sequences within threads
-	    { ThreadInfo *ti = threadInfo + i ;
-	      char *seq = arrp(ti->seq, 0, char) ;
-	      SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
-	      for (j = 0 ; j < arrayMax (ti->seqInfo) ; ++j, ++nSeq)
-		{ totSync += arrp(ti->seqInfo, j, SeqInfo)->nSync ;
-		  if (outType == SEQ)
-		    oneWriteLine (ofOut, 'S', arrp(ti->seqInfo, j, SeqInfo)->len, seq) ;
-		  else if (outType == PATH || outType == GBWT)
-		    { I64 nSync = arrp(ti->seqInfo, j, SeqInfo)->nSync ; // number of syncs
-		      if (arrp(ti->seqInfo, j, SeqInfo)->inSource == 1)
-			{ ++nSource ; nSeq0 = nSeq ; }
-		      oneInt(ofOut, 0) = arrp(ti->seqInfo, j, SeqInfo)->len ;
-		      oneInt(ofOut, 1) = nSource ; // first write the path number
-		      oneInt(ofOut, 2) = nSeq-nSeq0+1 ;
-		      oneWriteLine (ofOut, 'P', 0, 0) ;
-		      if (nSync && outType == GBWT) // add paths to the GBWT and write the start nodes
-			{ SyngBWTpath *sbp = syngBWTpathStartNew (gbwtOut, sp->sync) ;
-			  oneInt(ofOut, 0) = sp->sync ;
-			  oneInt(ofOut, 1) = sp->pos ;
-			  oneInt(ofOut, 2) = sbp->jLast ;
-			  oneInt(ofOut, 3) = nSync ;
-			  oneWriteLine (ofOut, 'Z', 0, 0) ;
-			  for (k = 1 ; k < nSync ; ++k)
-			    syngBWTpathAdd (sbp, sp[k].sync, sp[k].pos - sp[k-1].pos) ;
-			  syngBWTpathFinish (sbp) ;
-			  // now add the reverse path
-			  sbp = syngBWTpathStartNew (gbwtOut, -sp[nSync-1].sync) ;
-			  for (k = nSync-2 ; k >= 0 ; --k)
-			    syngBWTpathAdd (sbp, -sp[k].sync, sp[k+1].pos - sp[k].pos) ;
-			  syngBWTpathFinish (sbp) ;
-			}
-		      else if (nSync && outType == PATH)
-			{ static I64 *x = 0 ; // memory leak here...
-			  static size_t xSize = 0 ;
-			  if (!x)
-			    { xSize = nSync ; x = new (xSize, I64) ; }
-			  else if (xSize < nSync)
-			    { newFree (x,xSize,I64) ; xSize = nSync ; x = new (xSize, I64) ; }
-			  for (k = 0 ; k < nSync ; ++k) x[k] = sp[k].sync ;
-			  oneWriteLine (ofOut, 'z', nSync, x) ;
-			  for (k = 0 ; k < nSync ; ++k) x[k] = sp[k].pos ;
-			  oneWriteLine (ofOut, 'o', nSync, x) ;
-			}
-		      if (isOutputEnds)
-			{ I64 len = arrp(ti->seqInfo,j,SeqInfo)->len ;
-			  if (nSync)
-			    { oneWriteLine (ofOut, 'X', sp->pos, seq) ;
-			      I64 endOff = sp[nSync-1].pos + sms->kh->len ;
-			      oneWriteLine (ofOut, 'Y', len - endOff, seq + endOff) ;
-			    }
-			  else // split sequence into two - both parts must be less than kh->len
-			    { oneWriteLine (ofOut, 'X', len/2, seq) ;
-			      oneWriteLine (ofOut, 'Y', len - len/2, seq + len/2) ;
-			    }
-			}
-		      sp += nSync ;
-		    } // PATH or GBWT
-		  seq +=  arrp(ti->seqInfo, j, SeqInfo)->len ;
-		} // j sequences
-	    } // i threads
-	} // isDone: end of file
+	} // sio
+      else if (ofIn)
+	{ for (i = 0 ; i < nThread ; ++i)
+	    pthread_create (&threads[i], 0, threadProcessPaths, &tiBuf[0][i]) ;
+	  for (i = 0 ; i < nThread ; ++i)
+	    pthread_join (threads[i], 0) ;
+	  outputBatch (tiBuf[0], nThread, ofOut, gbwtOut,
+		       sms->kh->len, isOutputEnds,
+		       &nSeq, &nSeq0, &nSource, &totSync) ;
+	} // ofIn
       
       if (sio)
 	{ seqIOclose (sio) ;
@@ -693,7 +655,8 @@ int main (int argc, char *argv[])
     } // source file
 
   // compact CAS holes if any were created by concurrent inserts
-  if (isAddSyncmers)
+  // skip for single-file runs unless writing khash (holes corrupt the output)
+  if (isAddSyncmers && (nFile > 1 || ofK))
     { I64 nHoles = syncmerSetCompact (sms) ;
       if (nHoles)
 	fprintf (stdout, "compacted %lld CAS holes from hash table\n", nHoles) ;
@@ -704,13 +667,15 @@ int main (int argc, char *argv[])
 	   totSync, kmerHashMax(sms->kh), totSync / (double)kmerHashMax(sms->kh)) ;
 
   // destroy the thread objects
-  for (i = 0 ; i < nThread ; ++i)
-    { arrayDestroy (threadInfo[i].seq) ;
-      arrayDestroy (threadInfo[i].seqInfo) ;
-      arrayDestroy (threadInfo[i].syncPos) ;
-    }
+  for (int s = 0 ; s < 2 ; ++s)
+    for (i = 0 ; i < nThread ; ++i)
+      { arrayDestroy (tiBuf[s][i].seq) ;
+        arrayDestroy (tiBuf[s][i].seqInfo) ;
+        arrayDestroy (tiBuf[s][i].syncPos) ;
+      }
+  for (int s = 0 ; s < 2 ; ++s)
+    newFree (tiBuf[s], nThread, ThreadInfo) ;
   newFree (threads, nThread, pthread_t) ;
-  newFree (threadInfo, nThread, ThreadInfo) ;
 
   if (isHistK) // histogram of kmers
     { Array hist = arrayCreate (1024, I64) ;
