@@ -7,7 +7,8 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Jan  4 18:08 2025 (rd109)
+ * Last edited: Jan 11 13:33 2026 (rd109)
+ * * Oct  2 09:30 2025 (rd109): add localPath in OpenRead to try <path>.1<type> if <path> fails
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
  * * Mar 11 02:49 2024 (rd109): fixed group bug found by Gene
@@ -90,7 +91,7 @@ static inline I64 ltfRead (FILE *f) ;
 
 // error handling
 
-static char errorString[1024] ;
+static _Thread_local char errorString[1024] ;
 
 char *oneErrorString (void) { return errorString ; }
 
@@ -203,11 +204,11 @@ static void schemaAddInfoFromLine (OneSchema *vs, OneFile *vf, char t, char type
 { // assumes field specification is in the STRING_LIST of the current vf line
   // need to set vi->comment separately
   
-  static OneType a[32] ;
-  int            i ;
-  OneType        j ;
-  char          *s = oneString(vf) ;
-  int            n = oneLen(vf) ;
+  OneType  a[32] ;
+  int      i ;
+  OneType  j ;
+  char    *s = oneString(vf) ;
+  int      n = oneLen(vf) ;
   
   if (n > 32)
     die ("line specification %d fields too long - need to recompile", n) ;
@@ -276,8 +277,6 @@ static OneSchema *schemaLoadRecord (OneSchema *vs, OneFile *vf)
 
 static void oneFileDestroy (OneFile *vf) ; // need a forward declaration here
 
-static bool isBootStrap = false ;
-
 OneSchema *oneSchemaCreateFromFile (const char *filename)
 {
   FILE *fs = fopen (filename, "r") ;
@@ -286,7 +285,6 @@ OneSchema *oneSchemaCreateFromFile (const char *filename)
 
   OneSchema *vs = new0 (1, OneSchema) ;
 
-  isBootStrap = true ;
   OneFile *vf = new0 (1, OneFile) ;      // shell object to support bootstrap
   // bootstrap specification of linetypes to read schemas
   { OneInfo *vi ;
@@ -305,8 +303,8 @@ OneSchema *oneSchemaCreateFromFile (const char *filename)
   // first load the universal header and footer (non-alphabetic) line types 
   // do this by writing their schema into a temporary file and parsing it into the base schema
   { errno = 0 ;
-    static char template[64] ;
-#define VALGRIND_MACOS
+    char template[64] ;
+// #define VALGRIND_MACOS
 #ifdef VALGRIND_MACOS // MacOS valgrind is missing functions to make temp files it seems
     sprintf (template, "/tmp/OneSchema.%d", getpid()) ;
     vf->f = fopen (template, "w+") ;
@@ -373,8 +371,6 @@ OneSchema *oneSchemaCreateFromFile (const char *filename)
     vs = schemaLoadRecord (vs, vf) ;
   oneFileDestroy (vf) ;
 
-  isBootStrap = false ;
-  
   return vs0 ;
 }
 
@@ -393,12 +389,16 @@ static char *schemaFixNewlines (const char *text)
   
 OneSchema *oneSchemaCreateFromText (const char *text) // write to temp file and call CreateFromFile()
 {
-  static char template[64] ;
-  sprintf (template, "/tmp/OneTextSchema-%d.schema", getpid()) ;
-
+  // Claude points out that the getpid() solution below is not threadsafe.  So it proposed the code below.
+  // static char template[64] ;
+  // sprintf (template, "/tmp/OneTextSchema-%d.schema", getpid()) ;
+  
+  char template[] = "/tmp/OneTextSchema-XXXXXX" ;
   errno = 0 ;
-  FILE *f = fopen (template, "w") ;
-  if (!f) die ("failed to open temporary file %s for writing schema to", template) ;
+  int fd = mkstemp(template) ;
+  if (fd == -1) die ("failed to make temporary file %s for writing schema to - errno %d", template, errno) ;
+  FILE *f = fdopen(fd, "w") ;
+  if (!f) die ("failed to fdopen temporary file %s for writing schema to - errno %d", template, errno) ;
   char *fixedText = schemaFixNewlines (text) ;
   char *s = fixedText ;
   while (*s && *s != 'P')
@@ -1101,8 +1101,6 @@ char oneReadLine (OneFile *vf)
     }
   vf->lineType = t;
 
-  // if (!isBootStrap) fprintf (stderr, "reading line %d type %c\n", (int)vf->line, t) ;
-
   li = vf->info[(int) t];
   if (li == NULL)
     parseDie (vf, "unknown line type %c (%d was %d) line %d", t, t, x, (int)vf->line);
@@ -1367,7 +1365,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
     U8    c ;
 
     if (strcmp (path, "-") == 0)
-      f = stdin ;
+      f = stdin;
     else
       { f = fopen (path, "r");
 	if (!f && fileType)
@@ -1458,7 +1456,7 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
 		   "ONEcode file open error %s: if header exists it must begin with '1' line\n",
 		   localPath) ;
 	  oneFileDestroy (vf) ;
-	  if (localPath != path) free(localPath) ; 
+	  if (localPath != path) free(localPath) ;
 	  return 0 ;
 	}
 
@@ -1629,8 +1627,8 @@ OneFile *oneFileOpenRead (const char *path, OneSchema *vsArg, const char *fileTy
   vf->isCheckString = false;   // user can set this back to true if they wish
 
   if (!isBareFile && vsArg && !oneFileCheckSchema (vf, vsArg, false)) // check schema intersection
-    { snprintf (errorString, 1024, "ONEcode file open error %s: schema mismatch to code requirement\n",
-		localPath) ;
+    { snprintf (errorString, 1024,
+		"ONEcode file open error %s: schema mismatch to code requirement\n", localPath) ;
       oneFileDestroy (vf) ;
       if (localPath != path) free(localPath) ; 
       return NULL ;
@@ -2007,7 +2005,7 @@ bool oneFileCheckSchema (OneFile *vf, OneSchema *vs, bool isRequired)
 	{ snprintf (errorString, 1024, "OneSchema mismatch: record type %c missing in file schema\n", i) ;
 	  isMatch = false ;
 	}
-      else if (vis && vif)
+      else if (vis && vif && (isRequired || vif->given.count > 0)) // check fields that have data
 	{ if (vif->isObject != vis->isObject)
 	    { snprintf (errorString, 1024, "OneSchema mismatch: object type %c file %d != schema %d\n",
 		       i, vif->isObject, vis->isObject) ;
@@ -2083,7 +2081,7 @@ bool addProvenance(OneFile *vf, OneProvenance *from, int n)
 bool oneInheritProvenance(OneFile *vf, OneFile *source)
 { return (addProvenance(vf, source->provenance, source->info['!']->accum.count)); }
 
-bool oneAddProvenance(OneFile *vf, const char *prog, const char *version, char *format, ...)
+bool oneAddProvenance(OneFile *vf, const char *prog, const char *version, const char *format, ...)
 { va_list args ;
   OneProvenance p;
   time_t t = time(NULL);
@@ -2161,6 +2159,9 @@ bool oneStats (OneFile *of, char lineType, I64 *count, I64 *max, I64 *total)
   if (!info)  return false ;
   
   OneCounts   counts = of->isWrite ? info->accum : info->given ;
+  if (lineType == '>' || lineType == '<' || lineType == '!')
+    counts = info->accum ; // true and safe - not sure why we did it this way - 260111
+					    
   if (count) *count = counts.count ;
   if (max)   *max   = counts.max ;
   if (total) *total = counts.total ;
@@ -2523,7 +2524,7 @@ void oneWriteLine (OneFile *vf, char t, I64 listLen, void *listBuf)
   // ASCII - write field by field
 
   else
-    { if (!vf->isHeaderOut && !vf->isNoAsciiHeader) writeHeader (vf) ;
+    { if (!vf->isHeaderOut && !vf->isNoAsciiHeader && vf->share >= 0) writeHeader (vf) ;
 
       if (!vf->isLastLineBinary)      // terminate previous ascii line
 	fputc ('\n', vf->f);
@@ -2587,7 +2588,7 @@ void oneWriteLineDNA2bit (OneFile *vf, char lineType, I64 len, U8 *dnaBuf) // NB
   free (s) ;
 }
 
-void oneWriteComment (OneFile *vf, char *format, ...)
+void oneWriteComment (OneFile *vf, const char *format, ...)
 {
   char *comment ;
   
@@ -2597,7 +2598,7 @@ void oneWriteComment (OneFile *vf, char *format, ...)
   va_end (args) ;
 
   if (vf->isCheckString) // then check no newlines in format
-    { char *s = format ;
+    { char *s = (char*) format ;
       while (*s) if (*s++ == '\n') die ("newline in comment string: %s", comment) ;
     }
 
