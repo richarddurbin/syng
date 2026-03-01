@@ -5,7 +5,7 @@
  * Description: core utility functions
  * Exported functions:
  * HISTORY:
- * Last edited: Sep 29 18:31 2024 (rd109)
+ * Last edited: Jan 10 21:01 2026 (rd109)
  * * Feb 22 14:52 2019 (rd109): added fzopen()
  * Created: Thu Aug 15 18:32:26 1996 (rd)
  *-------------------------------------------------------------------
@@ -184,6 +184,7 @@ FILE *fopenTag (char* root, char* tag, char* mode)
 #ifndef RUSAGE_SELF     /* to prevent "RUSAGE_SELF redefined" gcc warning, fixme if this is more intricate */
 #define RUSAGE_SELF 0
 #endif
+#include <locale.h>
 
 #ifdef RUSAGE_STRUCTURE_DEFINITIONS
 struct rusage {
@@ -221,6 +222,8 @@ void timeUpdate (FILE *f)
   struct timeval tNew ;
   int secs, usecs ;
 
+  setlocale(LC_NUMERIC, "en_US.UTF-8");
+
   getrusage (RUSAGE_SELF, &rNew) ;
   gettimeofday(&tNew, 0) ;
   if (!isFirst)
@@ -237,7 +240,7 @@ void timeUpdate (FILE *f)
       if (usecs < 0) { usecs += 1000000 ; secs -= 1 ; }
       fprintf (f, "  elapsed %d.%06d", secs, usecs) ;
       fprintf (f, "  alloc_max %.3f", maxAllocated/(1.*(1<<30))) ;
-      fprintf (f, "  max_RSS %ld", rNew.ru_maxrss - rOld.ru_maxrss) ;
+      fprintf (f, "  max_RSS %.3f", (rNew.ru_maxrss - rOld.ru_maxrss)/(1.*(1<<30))) ;
       fputc ('\n', f) ;
     }
   else
