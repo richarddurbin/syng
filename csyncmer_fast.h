@@ -1155,6 +1155,24 @@ static inline size_t csyncmer_append_filtered(
 // For exact results, use csyncmer_rescan_32_count() or the 64-bit
 // iterator API (csyncmer_iterator_*_64).
 
+#define CSYNCMER_DEFINE_TWOSTACK_TLS(FUNC_NAME)                                 \
+static CSYNCMER_THREAD_LOCAL uint32_t* ts_pos_bufs_##FUNC_NAME[8];             \
+static CSYNCMER_THREAD_LOCAL uint8_t* ts_str_bufs_##FUNC_NAME[8];              \
+static CSYNCMER_THREAD_LOCAL size_t ts_buf_cap_##FUNC_NAME[8];                 \
+static CSYNCMER_THREAD_LOCAL int ts_init_##FUNC_NAME;                          \
+                                                                                \
+static inline void FUNC_NAME##thread_cleanup(void) {                           \
+    if (!ts_init_##FUNC_NAME) return;                                          \
+    for (int i = 0; i < 8; i++) {                                              \
+        free(ts_pos_bufs_##FUNC_NAME[i]);                                      \
+        ts_pos_bufs_##FUNC_NAME[i] = NULL;                                     \
+        free(ts_str_bufs_##FUNC_NAME[i]);                                      \
+        ts_str_bufs_##FUNC_NAME[i] = NULL;                                     \
+        ts_buf_cap_##FUNC_NAME[i] = 0;                                         \
+    }                                                                          \
+    ts_init_##FUNC_NAME = 0;                                                   \
+}
+
 #define CSYNCMER_DEFINE_TWOSTACK_SIMD_32(FUNC_NAME, CANONICAL, COLLECT_POSITIONS) \
 static inline size_t FUNC_NAME(                                                \
     const char* sequence,                                                      \
@@ -1215,11 +1233,8 @@ static inline size_t FUNC_NAME(                                                \
         if (chunk_ends[i] > num_kmers) chunk_ends[i] = (uint32_t)num_kmers;   \
     }                                                                          \
                                                                                \
-    /* Thread-local lane buffers (unique per expansion via ##) */              \
-    static CSYNCMER_THREAD_LOCAL uint32_t* ts_pos_bufs_##FUNC_NAME[8];        \
-    static CSYNCMER_THREAD_LOCAL uint8_t* ts_str_bufs_##FUNC_NAME[8];         \
-    static CSYNCMER_THREAD_LOCAL size_t ts_buf_cap_##FUNC_NAME[8];            \
-    static CSYNCMER_THREAD_LOCAL int ts_init_##FUNC_NAME;                     \
+    /* Thread-local lane buffers declared at file scope via                    \
+     * CSYNCMER_DEFINE_TWOSTACK_TLS (freed by ##thread_cleanup) */            \
     size_t lane_counts[8] = {0};                                               \
     size_t max_per_lane = chunk_len + 64;                                      \
                                                                                \
@@ -1683,11 +1698,26 @@ static inline size_t FUNC_NAME(                                                \
     return syncmer_count;                                                      \
 }
 
+/* Declare thread-local lane buffers and cleanup functions at file scope */
+CSYNCMER_DEFINE_TWOSTACK_TLS(csyncmer_twostack_simd_32_count_)
+CSYNCMER_DEFINE_TWOSTACK_TLS(csyncmer_twostack_simd_32_positions_)
+CSYNCMER_DEFINE_TWOSTACK_TLS(csyncmer_twostack_simd_32_canonical_count_)
+CSYNCMER_DEFINE_TWOSTACK_TLS(csyncmer_twostack_simd_32_canonical_positions_)
+
 /* Generate all 4 TWOSTACK variants */
 CSYNCMER_DEFINE_TWOSTACK_SIMD_32(csyncmer_twostack_simd_32_count_,              0, 0)
 CSYNCMER_DEFINE_TWOSTACK_SIMD_32(csyncmer_twostack_simd_32_positions_,          0, 1)
 CSYNCMER_DEFINE_TWOSTACK_SIMD_32(csyncmer_twostack_simd_32_canonical_count_,    1, 0)
 CSYNCMER_DEFINE_TWOSTACK_SIMD_32(csyncmer_twostack_simd_32_canonical_positions_,1, 1)
+
+/* Free all thread-local lane buffers for the calling thread.
+ * Must be called before thread exit when threads are ephemeral (pthread_create/join). */
+static inline void csyncmer_twostack_thread_cleanup(void) {
+    csyncmer_twostack_simd_32_count_thread_cleanup();
+    csyncmer_twostack_simd_32_positions_thread_cleanup();
+    csyncmer_twostack_simd_32_canonical_count_thread_cleanup();
+    csyncmer_twostack_simd_32_canonical_positions_thread_cleanup();
+}
 
 /* Public API wrappers preserving existing signatures */
 

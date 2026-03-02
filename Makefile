@@ -1,12 +1,18 @@
 # makefile for gaffer developed on Richard's Mac
 
 CFLAGS = -O3 -g
-ifdef CSYNCMER
+ifneq ($(CSYNCMER),)
+ifneq ($(CSYNCMER),0)
 CFLAGS += -DUSE_CSYNCMER
+USE_CSYNCMER = 1
 endif
-ifdef AVX2
+endif
+ifneq ($(AVX2),)
+ifneq ($(AVX2),0)
 CFLAGS += -DHAVE_AVX2
 CFLAGS_AVX2 = -march=native -mavx2
+USE_AVX2 = 1
+endif
 endif
 #CFLAGS = -g	# for debugging
 
@@ -42,8 +48,8 @@ endif
 seqio.o: seqio.c seqio.h ONElib.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(SEQIO_OPTS) -c $^
 
-ifdef CSYNCMER
-ifdef AVX2
+ifdef USE_CSYNCMER
+ifdef USE_AVX2
 syncmer_iter.o: avx2.c avx2.h syncmer_iter.h csyncmer_fast.h seqio.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(CFLAGS_AVX2) -c $< -o syncmer_iter.o
 else
@@ -57,8 +63,8 @@ syncmer_iter.o: seqhash.c seqhash.h $(UTILS_HEADERS)
 endif
 
 # AVX2 helpers as separate object (seqhash + AVX2)
-ifdef AVX2
-ifndef CSYNCMER
+ifdef USE_AVX2
+ifndef USE_CSYNCMER
 avx2.o: avx2.c avx2.h seqio.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) $(CFLAGS_AVX2) -DAVX2_HELPERS_ONLY -c $<
 LINK_AVX2 = avx2.o

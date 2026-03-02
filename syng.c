@@ -152,6 +152,7 @@ static void *threadProcessSequences (void* arg) // find the start positions of a
       arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ; // ensure not used in output loop
     }
   if (sit) seqhashIteratorDestroy (sit) ;
+  syncmerThreadCleanup () ;
 
   newFree (pipePack, PF_TOTAL * plen, U64) ;
   return 0 ;

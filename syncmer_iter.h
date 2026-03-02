@@ -51,6 +51,9 @@ static void seqhashIteratorDestroy (SeqhashIterator *si)
   free (si->batch_strands) ;
   free (si) ; }
 
+// call before thread exit to free thread-local SIMD lane buffers
+void syncmerThreadCleanup (void) ;
+
 // utilities
 char *seqString (U64 kmer, int len)  ;
 static inline char* seqhashString (Seqhash *sh, U64 kmer) { return seqString (kmer, sh->k) ; }

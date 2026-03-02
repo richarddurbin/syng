@@ -106,12 +106,13 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
     }
 
   newFree (uBuf, ti->kh->plen, U64) ;
+  syncmerThreadCleanup () ;
   return 0 ;
 }
 
 /****************************************************/
 
-static char *usage = 
+static char *usage =
   "Usage: syngmap [options]* <.1khash file> <.1gbwt file> <sequence file>\n"
   "possible options are:\n"
   "  -T <threads>           : [8] number of threads\n"

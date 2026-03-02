@@ -531,6 +531,9 @@ char *seqString (U64 kmer, int len)
   return buf ;
 }
 
+void syncmerThreadCleanup (void)
+{ csyncmer_twostack_thread_cleanup () ; }
+
 void seqhashForCompilerHappiness (Seqhash *sh, SeqhashIterator *sit)
 { seqhashDestroy (sh) ; seqhashIteratorDestroy (sit) ; }
 
