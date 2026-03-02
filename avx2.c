@@ -402,8 +402,8 @@ void seqhash_hash_avx2 (const U64 *fwd, const U64 *rc, int n,
 
 /************ Seqhash create/read/write ************/
 
-Seqhash *seqhashCreate (int k, int w)
-{
+Seqhash *seqhashCreate (int k, int w, int seed)
+{ (void)seed ; // unused for ntHash64 path, kept for API compatibility
   assert (sizeof (U64) == 8) ;
   Seqhash *sh = new0 (1, Seqhash) ;
   sh->k = k ; if (k < 1 || k >= 32) die ("seqhash k %d must be between 1 and 32\n", k) ;

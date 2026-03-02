@@ -1,5 +1,3 @@
-/* HISTORICAL -- replaced by syncmer_iter.c/h, kept for reference */
-
 /*  File: seqhash.h
  *  Author: Richard Durbin (rd109@cam.ac.uk)
  *  Copyright (C) Richard Durbin, Cambridge University, 2018
@@ -13,9 +11,6 @@
  */
 
 #include "utils.h"
-#ifdef HAVE_AVX2
-#include "avx2.h"
-#endif
 
 typedef struct {
   int seed ;			/* seed */
@@ -54,8 +49,7 @@ SeqhashIterator *seqhashIterator (Seqhash *sh, char *s, int len) ;
 bool seqhashNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 
 static void seqhashIteratorDestroy (SeqhashIterator *si)
-{ free (si->hash) ; free (si->isForward) ;
-  free (si) ; }
+{ free (si->hash) ; free (si->isForward) ; free (si) ; }
 
 // iterator to extract minimizers from a sequence
 // NB sequence must continue to exist through the life of the iterator

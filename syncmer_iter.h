@@ -28,7 +28,7 @@ typedef struct {
   bool isDone ;
 } SeqhashIterator ;
 
-Seqhash *seqhashCreate (int k, int w) ;
+Seqhash *seqhashCreate (int k, int w, int seed) ;
 static void seqhashDestroy (Seqhash *sh) { free (sh) ; }
 
 void seqhashWrite (Seqhash *sh, FILE *f) ;

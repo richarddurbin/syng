@@ -1,5 +1,3 @@
-/* HISTORICAL -- replaced by syncmer_iter.c/h, kept for reference */
-
 /*  File: seqhash.c
  *  Author: Richard Durbin (rd109@cam.ac.uk)
  *  Copyright (C) Richard Durbin, Cambridge University, 2018
@@ -9,7 +7,7 @@
 	see test main() at end for standard usage pattern
  * Exported functions: see seqhash.h
  * HISTORY:
- * Last edited: Feb 21 2026 (rd109)
+ * Last edited: Jan 14 09:28 2025 (rd109)
  * Created: Sat Feb 24 19:20:18 2018 (rd)
  *-------------------------------------------------------------------
  */
@@ -190,7 +188,7 @@ SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len)
   SeqhashIterator *si = seqhashIterator (sh, s, len) ;
   if (len < sh->w + sh->k) si->isDone = true ; // because we are looking for w-mers not k-mers here
   if (si->isDone) return si ;
-
+    
   /* store first w hashes in hash and set ->min */
   si->min = si->hash[0] ;
   int i ;
@@ -266,61 +264,27 @@ bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF)
   if (isF) *isF = si->isForward[si->iStart] ;
 
   if (si->hash[si->iStart] == si->min) // need to find new min - could use a heap, but not so bad to search here
-    { si->hash[si->iStart] = U64MAX ;
-#ifdef HAVE_AVX2
-      si->min = seqhash_min_u64 (si->hash, si->sh->w) ;
-#else
-      int i ;
-      si->min = U64MAX ;
+    { int i ;
+      si->min = si->hash[si->iStart] = U64MAX ;
       for (i = 0 ; i < si->sh->w ; ++i) if (si->hash[i] < si->min) si->min = si->hash[i] ;
-#endif
     }
-
-  /* Inlined version of the advanceHashRC loop with local variables to keep h, hRC, s
-     in registers — the compiler can't hoist si->h / si->hRC out of the struct because
-     si->hash[] may alias them.  This avoids reloading shift1 and factor1 every iteration. */
-  { Seqhash *sh = si->sh ;
-    U64 h = si->h, hRC = si->hRC ;
-    char *s = si->s ;
-    U64 mask = sh->mask, factor1 = sh->factor1 ;
-    int shift1 = sh->shift1 ;
-    const U64 *patternRC = sh->patternRC ;
-    U64 *hashBuf = si->hash ;
-    bool *fwdBuf = si->isForward ;
-    int iStart = si->iStart, w = sh->w ;
-    U64 min = si->min ;
-    char *sEnd = si->sEnd ;
-
-    while (s < sEnd)
-      { h = ((h << 2) & mask) | *s ;
-	hRC = (hRC >> 2) | patternRC[(int)*s] ;
-	++s ;
-	U64 hashF = (h * factor1) >> shift1 ;
-	U64 hashR = (hRC * factor1) >> shift1 ;
-	U64 x ; bool fwd ;
-	if (hashF < hashR) { x = hashF ; fwd = true ; }
-	else               { x = hashR ; fwd = false ; }
-	hashBuf[iStart] = x ;
-	fwdBuf[iStart] = fwd ;
-	++iStart ;
-	if (iStart == w) { si->base += w ; iStart = 0 ; }
-	if (x <= min) // min at the end of the w-mer
-	  { min = x ;
-	    si->h = h ; si->hRC = hRC ; si->s = s ;
-	    si->iStart = iStart ; si->min = min ;
-	    return true ;
-	  }
-	if (hashBuf[iStart] == min) // min at the beginning of the w-mer
-	  { si->h = h ; si->hRC = hRC ; si->s = s ;
-	    si->iStart = iStart ; si->min = min ;
-	    return true ;
-	  }
-      }
-    si->h = h ; si->hRC = hRC ; si->s = s ;
-    si->iStart = iStart ; si->min = min ;
-    si->isDone = true ;
-    return true ;
-  }
+  
+  while (true) // move forwards to the next minimum
+    { U64 x = advanceHashRC (si, &si->isForward[si->iStart]) ;
+      if (si->s >= si->sEnd) { si->isDone = true ; return true ; }
+      si->hash[si->iStart++] = x ;
+      if (si->iStart == si->sh->w) { si->base += si->sh->w ; si->iStart = 0 ; }
+      if (x <= si->min) // min at the end of the w-mer
+	{ si->min = x ;
+	  //	  printf (" syncmerNext   at_end %" PRId64 " %" PRIx64 " %" PRIu64 "\n", si->iStart, x, si->sEnd-si->s) ;
+	  return true ;
+	}
+      if (si->hash[si->iStart] == si->min) // min at the beginning of the w-mer
+	{
+	  // printf (" syncmerNext at_start %" PRId64 " %" PRIx64 " %" PRIu64 "\n", si->iStart, x, si->sEnd-si->s) ;
+	  return true ;
+	}
+    }
 }
 
 /************** and for modimizers **********************/

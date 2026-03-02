@@ -231,7 +231,7 @@ void seqIOReleaseRead (SeqIO *si)
 }
 
 /********** local routines for seqIOread() ***********/
-
+ 
 static inline I64 bufRead (SeqIO *si, void *buf, U64 len)
 { if (si->gzf) return gzread (si->gzf, buf, len) ;
   ssize_t n = read (si->fd, buf, len) ;
@@ -389,20 +389,20 @@ bool seqIOread (SeqIO *si)
 	}
 #ifdef HAVE_AVX2
       if (si->convert == dna2textN2AConv)
-	si->seqLen = convertFilterAVX2 (sqioSeq(si), si->b, si->convert) ;
-      else if (si->convert == dna2index4Conv)
-	si->seqLen = convertFilterIndex4AVX2 (sqioSeq(si), si->b, si->convert) ;
-      else
+	{ si->seqLen = convertFilterAVX2 (sqioSeq(si), si->b, si->convert) ; goto fasta_convert_done ; }
+      if (si->convert == dna2index4Conv)
+	{ si->seqLen = convertFilterIndex4AVX2 (sqioSeq(si), si->b, si->convert) ; goto fasta_convert_done ; }
 #endif
-      { char *s = sqioSeq(si), *t = s ;
-        while (s < si->b) if ((*t++ = si->convert[(int)*s++]) < 0) --t ;
-        si->seqLen = t - sqioSeq(si) ;
-      }
+      char *s = sqioSeq(si), *t = s ;
+      while (s < si->b) if ((*t++ = si->convert[(int)*s++]) < 0) --t ;
+      si->seqLen = t - sqioSeq(si) ;
+    fasta_convert_done: ;
     }
   else if (si->type == FASTQ)
-    { /* Line 2: sequence — memchr fast path + fused convert */
+    { /* Fast path: if the newline is visible in the current buffer, use memchr + AVX2
+	 convert to avoid per-byte bufAdvanceInRecord(); falls through to original code otherwise. */
       char *nl = (char *)memchr(si->b, '\n', si->nb) ;
-      if (nl) /* fast path: seq line fits in buffer */
+      if (nl)
 	{ si->seqLen = nl - si->b ;
 	  if (si->convert && !si->mmapSize)
 	    {
@@ -436,34 +436,30 @@ bool seqIOread (SeqIO *si)
 	      }
 	    }
 	  si->nb -= (U64)(nl - si->b) ; si->b = nl ;
+	  goto fastq_seq_done ;
 	}
-      else /* slow path: seq line spans buffer boundary — never mmap (whole file mapped) */
-	{ while (*si->b != '\n') bufAdvanceInRecord(si) ;
-	  si->seqLen = si->b - sqioSeq(si) ;
-	  if (si->convert)
-	    { char *s = sqioSeq(si) ;
-	      while (s < si->b) { *s = si->convert[(int)*s] ; ++s ; }
-	    }
+      while (*si->b != '\n') bufAdvanceInRecord(si) ;
+      si->seqLen = si->b - sqioSeq(si) ;
+      if (si->convert)
+	{ char *s = sqioSeq(si) ;
+	  while (s < si->b) { *s = si->convert[(int)*s] ; ++s ; }
 	}
-      ++si->line ; bufAdvanceInRecord(si) ;	              /* line 3 */
+    fastq_seq_done:
+      ++si->line ; bufAdvanceInRecord(si) ; 	      /* line 3 */
       if (*si->b != '+') die ("missing + FASTQ line %llu", si->line) ;
-      /* + line — memchr fast path */
-      nl = (char *)memchr(si->b, '\n', si->nb) ;
-      if (nl)
-	{ si->nb -= (U64)(nl - si->b) ; si->b = nl ; }
-      else
-	{ while (*si->b != '\n') bufAdvanceInRecord(si) ; }
-      ++si->line ; bufAdvanceInRecord(si) ;	              /* line 4 */
+      nl = (char *)memchr(si->b, '\n', si->nb) ; /* ignore remainder of + line */
+      if (nl) { si->nb -= (U64)(nl - si->b) ; si->b = nl ; goto fastq_plus_done ; }
+      while (*si->b != '\n') bufAdvanceInRecord(si) ; /* ignore remainder of + line */
+    fastq_plus_done:
+      ++si->line ; bufAdvanceInRecord(si) ;	      /* line 4 */
       si->qualStart = si->b - si->buf ;
       if (!si->isQual && si->nb > si->seqLen) /* fast skip: quality not needed */
-	{ si->b += si->seqLen ; si->nb -= si->seqLen ; }
-      else
-	{ while (*si->b != '\n') bufAdvanceInRecord(si) ;
-	  if (si->b - si->buf - si->qualStart != si->seqLen)
-	    die ("qual not same length as seq line %llu", si->line) ;
-	  if (si->isQual)
-	    { char *q = sqioQual(si), *e = q + si->seqLen ; while (q < e) *q++ -= 33 ; }
-	}
+	{ si->b += si->seqLen ; si->nb -= si->seqLen ; goto fastq_qual_done ; }
+      while (*si->b != '\n') bufAdvanceInRecord(si) ;
+      if (si->b - si->buf - si->qualStart != si->seqLen)
+	die ("qual not same length as seq line %llu", si->line) ;
+      if (si->isQual) { char *q = sqioQual(si), *e = q + si->seqLen ; while (q < e) *q++ -= 33 ; }
+    fastq_qual_done:
       ++si->line ; bufAdvanceEndRecord(si) ;
     }
 
@@ -711,19 +707,12 @@ void seqIOwrite (SeqIO *si, char *id, char *desc, U64 seqLen, char *seq, char *q
 
 /********* reverse complement sequences ********/
 
-char* seqRevComp (char* s, U64 len) // index and text (including ambig)
+char* seqRevComp (char* s, U64 len) // index and text (including ambig) 
 {
   char *r = new(len,char) ;
   r += len ;
   while (len--) *--r = complementBase[(int)*s++] ;
   return r ;
-}
-
-bool isCanonical (char *dna, int len)
-{
-  int x = -1, y = len ;
-  while (dna[++x] == complementBase[(int)dna[--y]]) ;
-  return (dna[x] < complementBase[(int)dna[y]]) ;
 }
 
 /********** some routines to pack sequence and qualities for binary representation ***********/
@@ -758,8 +747,7 @@ SeqPack *seqPackCreate (char unpackA)
   return sp ;
 }
 
-
-static U8 pack[] = {    // sends N (indeed any non-CGT) to A
+static U8 pack[] = {    // sends N (indeed any non-CGT) to A, except 0,1,2,3 are maintained
    0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
@@ -786,22 +774,20 @@ U8* seqPack (SeqPack *sp, char *s, U8 *u, U64 len) /* compress s into (len+3)/4 
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
 #ifdef HAVE_AVX2
-  if (len > 0 && (unsigned char)s[0] < 4) seqPackIndex4AVX2 (s, u, len) ;
-  else if (len > 0)                        seqPackAVX2 (s, u, len) ;
-  else
+  if (len > 0 && (unsigned char)s[0] < 4) { seqPackIndex4AVX2 (s, u, len) ; return u0 ; }
+  if (len > 0)                             { seqPackAVX2 (s, u, len) ; return u0 ; }
 #endif
-  { while (len >= 4)
-      { *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) |
-	  (pack[(int)s[2]] << 4) | (pack[(int)s[3]] << 6) ;
-	len -= 4 ; s += 4 ;
-      }
-    switch (len)
-      { case 3: *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) | (pack[(int)s[2]] << 4) ; break ;
-	case 2: *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) ; break ;
-	case 1: *u++ = pack[(int)s[0]] ; break ;
-	case 0: break ;
-      }
-  }
+  while (len >= 4)
+    { *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) |
+	(pack[(int)s[2]] << 4) | (pack[(int)s[3]] << 6) ;
+      len -= 4 ; s += 4 ;
+    }
+  switch (len)
+    { case 3: *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) |	(pack[(int)s[2]] << 4) ; break ;
+      case 2: *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) ; break ;
+      case 1: *u++ = pack[(int)s[0]] ; break ;
+      case 0: break ;
+    }
   return u0 ;
 }
 
@@ -810,23 +796,21 @@ U8* seqPackRevComp (SeqPack *sp, char *s, U8 *u, U64 len) /* packs the RC of the
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
 #ifdef HAVE_AVX2
-  if (len > 0 && (unsigned char)s[0] < 4) seqPackRevCompIndex4AVX2 (s, u, len) ;
-  else if (len > 0)                        seqPackRevCompAVX2 (s, u, len) ;
-  else
+  if (len > 0 && (unsigned char)s[0] < 4) { seqPackRevCompIndex4AVX2 (s, u, len) ; return u0 ; }
+  if (len > 0)                             { seqPackRevCompAVX2 (s, u, len) ; return u0 ; }
 #endif
-  { s += len-4 ;
-    while (len >= 4)
-      { *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) |
-	  (packC[(int)s[1]] << 4) | (packC[(int)s[0]] << 6) ;
-	len -= 4 ; s-= 4 ;
-      }
-    switch (len)
-      { case 3: *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) | (packC[(int)s[1]] << 4) ; break ;
-	case 2: *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) ; break ;
-	case 1: *u++ = packC[(int)s[3]] ; break ;
-	default: break ;
-      }
-  }
+  s += len-4 ;
+  while (len >= 4)
+    { *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) |
+	(packC[(int)s[1]] << 4) | (packC[(int)s[0]] << 6) ;
+      len -= 4 ; s-= 4 ;
+    }
+  switch (len)
+    { case 3: *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) | (packC[(int)s[1]] << 4) ; break ;
+      case 2: *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) ; break ;
+      case 1: *u++ = packC[(int)s[3]] ; break ;
+      default: break ;
+    }
   return u0 ;
 }
 

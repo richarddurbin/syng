@@ -491,11 +491,7 @@ int main (int argc, char *argv[])
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   fprintf (stdout, "k, w are %d %d\n", params.k, params.w) ;
-#ifdef USE_CSYNCMER
-  Seqhash *sh = seqhashCreate (params.k, params.w+1) ; // need the +1 here, awkwardly
-#else
-  Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ;
-#endif
+  Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ; // need the +1 here, awkwardly
 
   if (!sms)
     { // Estimate unique syncmer count from largest input file for hash pre-sizing

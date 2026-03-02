@@ -57,6 +57,8 @@ I64       kmerHashCompact (KmerHash *kh) ;
 void      kmerHashResize (KmerHash *kh) ;
 // call single-threaded between chunks to resize if near capacity
 
+bool      isCanonical (char *dna, int len) ; // true if dna < reverseComplement(dna)
+
 char*     kmerHashSeq (KmerHash *kh, I64 i, char *buf) ; // retrieve i'th sequence (rev-comp if i < 0)
                                                          // buf can be 0, but then not thread-safe
 static inline void kmerHashPrefetch (KmerHash *kh, U64 *packed) // prefetch table entry for packed kmer

@@ -120,7 +120,6 @@ SeqIO *seqIOadoptOneFile (void *handle, int* convert, int qualThresh) ;
 /* utility */
 
 char* seqRevComp (char *s, U64 len) ; /* reverse complements both index and text encodings */
-bool  isCanonical (char *dna, int len) ; /* true if dna < reverseComplement(dna) */
 
 /* standard converters - instantiated in seqio.c */
 

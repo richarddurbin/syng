@@ -35,7 +35,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->pack = new0(kh->plen*kh->psize, U64) ;
   kh->seqbuf = new0(len+1,char) ;
   kh->seqPack = seqPackCreate ('a') ; // 'a' means unpack into acgt
-  return kh ;
+  return kh ; 
 }
 
 void kmerHashDestroy (KmerHash *kh)
@@ -47,6 +47,23 @@ void kmerHashDestroy (KmerHash *kh)
   newFree (kh, 1, KmerHash) ;
 }
 
+static U8 comp[] = {   /* sends N (indeed any non-CGT) to A, except 0,1,2,3 are maintained */
+   3,   2, 1,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
+   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
+   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
+   0,   0, 0,   0,   0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0, 
+   0, 'T', 0, 'G',   0, 0, 0, 'C', 0, 0, 0, 0, 0, 0, 'N', 0,
+   0,   0, 0,   0, 'A', 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0,
+   0, 't', 0, 'g',   0, 0, 0, 'c', 0, 0, 0, 0, 0, 0, 'n', 0,
+   0,   0, 0,   0, 'a', 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0
+} ;
+
+bool isCanonical (char *dna, int len)
+{
+  int x = -1, y = len ;
+  while (dna[++x] == comp[(int)dna[--y]]) ;
+  return (dna[x] < comp[(int)dna[y]]) ;
+}
 
 static inline bool isMatch (U64 *u, U64 *v, int n)
 {
@@ -137,6 +154,7 @@ static void doubleTable (KmerHash *kh)
   kh->table = newTable ;
   kh->pack = newResize (kh->pack, kh->plen*kh->psize, 2*kh->plen*kh->psize, U64) ;
   kh->psize *= 2 ;
+  // printf ("doubled at max = %llu to %llu\n", kh->max, kh->psize) ;
 }
 
 bool kmerHashAdd (KmerHash *kh, char *dna, I64 *index)
@@ -167,7 +185,7 @@ bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and c
   memcpy (packseq(kh,++kh->max), u, kh->plen*sizeof(I64)) ; // have to copy it
   kh->table[newLoc] = kh->max ; // add the new location
   if (index) *index = kh->max ;
-
+  
   if (kh->max == kh->psize-1) doubleTable (kh) ;
 
   // printf ("add: loc %llx index %lld max %lld\n", loc, *index, kh->max) ;

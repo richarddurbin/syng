@@ -150,7 +150,7 @@ static char *schemaText =
   "S 7 syncset               SYNCMER SET\n"
   "D h 3 3 INT 3 INT 3 INT   k, w, seed for the seqhash: for syncs k = |smer|, w+k = |syncmer|\n"
   "O t 3 3 INT 3 INT 3 INT   max, len, dim for KmerHash table\n"
-  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n"
+  "D S 1 3 DNA               packed sequences aligned to 64-bit boundaries\n" 
   "D L 1 8 INT_LIST          locations in the table\n"
   "D C 1 8 INT_LIST          kmer counts\n"
   "D M 1 6 STRING            maximum count in any input - (1..127)\n"

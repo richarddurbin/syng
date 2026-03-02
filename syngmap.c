@@ -37,14 +37,9 @@ static void readParams (OneFile *of, Params *p)
 
 static void checkParams (OneFile *of, Params *p)
 {
-  if (oneInt(of,0) != p->k || oneInt(of,1) != p->w)
-    die ("hash parameters mismatch: (k,w) file (%d,%d) != code (%d,%d)",
-	 oneInt(of,0), oneInt(of,1), p->k, p->w) ;
-#ifndef USE_CSYNCMER
-  if (oneInt(of,2) != p->seed)
-    die ("hash parameters mismatch: seed file %d != code %d",
-	 oneInt(of,2), p->seed) ;
-#endif
+  if (oneInt(of,0) != p->k || oneInt(of,1) != p->w || oneInt(of,2) != p->seed)
+    die ("hash parameters mismatch: (k,w,s) file (%d,%d,%d) != code (%d,%d,%d)",
+	 oneInt(of,0), oneInt(of,1), oneInt(of,2), p->k, p->w, p->seed) ;
 }
 
 /****************************************************/
@@ -175,11 +170,7 @@ int main (int argc, char *argv[])
   // read the khash 
   Params     params ;
   readParams (ofK, &params) ;                    // read the syncmer hash parameters
-#ifdef USE_CSYNCMER
-  Seqhash *sh = seqhashCreate (params.k, params.w+1) ; // need the +1 here, awkwardly
-#else
   Seqhash *sh = seqhashCreate (params.k, params.w+1, params.seed) ; // need the +1 here, awkwardly
-#endif
   KmerHash  *kh = kmerHashReadOneFile (ofK) ;    // read in the kmerhash
   if (kh->len != params.w + params.k)
     die ("syncmer len mismatch %d != %d + %d", kh->len, params.w, params.k) ;
