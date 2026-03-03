@@ -11,9 +11,12 @@
  *-------------------------------------------------------------------
  */
 
+#define _GNU_SOURCE
 #include "seqio.h"
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #ifdef ONEIO
 #include "ONElib.h"
@@ -27,6 +30,44 @@ void bamFileClose (SeqIO *si) ;
 
 // global
 char* seqIOtypeName[] = { "unknown", "fasta", "fastq", "binary", "onecode", "bam" } ;
+
+#ifdef HAVE_AVX2
+#include "avx2.h"
+#include <immintrin.h>
+
+/* NTA-prefetched memchr: data enters L1 and at most one L3 way,
+   preventing streaming I/O scans from evicting hash table entries. */
+__attribute__((target("avx2")))
+static inline char *memchr_nta(const char *s, int c, size_t n) {
+    __m256i target = _mm256_set1_epi8((char)c);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        _mm_prefetch(s + i + 512, _MM_HINT_NTA);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(s + i));
+        int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, target));
+        if (mask) return (char*)(s + i + __builtin_ctz(mask));
+    }
+    for (; i < n; i++) if (s[i] == (char)c) return (char*)(s + i);
+    return NULL;
+}
+
+/* Fused scan+copy with NTA prefetch: scans for byte c while copying src to dst.
+   Returns pointer into src at the found byte, or NULL if not found within n bytes. */
+__attribute__((target("avx2")))
+static inline char *memchr_copy_nta(char *dst, const char *src, int c, size_t n) {
+    __m256i target = _mm256_set1_epi8((char)c);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        _mm_prefetch(src + i + 512, _MM_HINT_NTA);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(src + i));
+        _mm256_storeu_si256((__m256i*)(dst + i), v);
+        int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, target));
+        if (mask) return (char*)(src + i + __builtin_ctz(mask));
+    }
+    for (; i < n; i++) { dst[i] = src[i]; if (src[i] == (char)c) return (char*)(src + i); }
+    return NULL;
+}
+#endif
 
 SeqIO *seqIOopenRead (char *filename, int* convert, bool isQual)
 {
@@ -141,6 +182,40 @@ SeqIO *seqIOopenRead (char *filename, int* convert, bool isQual)
       return 0 ;
     }
 #endif
+
+  /* for uncompressed FASTQ: mmap the file read-only to avoid read() memcpy */
+  /* for uncompressed FASTA: use raw read() (FASTA needs in-place newline filtering) */
+  if ((si->type == FASTA || si->type == FASTQ)
+      && si->gzf && gzdirect(si->gzf)
+      && strcmp(filename, "-") != 0)
+    { U64 pos = gztell(si->gzf) ;
+      gzclose(si->gzf) ; si->gzf = NULL ;
+      si->fd = open(filename, O_RDONLY) ;
+      if (si->type == FASTQ)
+	{ struct stat st ;
+	  fstat(si->fd, &st) ;
+	  char *map = (char*) mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, si->fd, 0) ;
+	  if (map != MAP_FAILED)
+	    { madvise(map, st.st_size, MADV_SEQUENTIAL) ;
+	      free(si->buf) ;
+	      si->buf = map ; si->b = map ; si->nb = st.st_size ;
+	      si->bufSize = st.st_size ; si->mmapSize = st.st_size ;
+	    }
+	  else /* mmap failed — fall back to raw read() */
+	    { lseek(si->fd, pos, SEEK_SET) ;
+#ifdef __linux__
+	      posix_fadvise(si->fd, 0, 0, POSIX_FADV_SEQUENTIAL) ;
+#endif
+	    }
+	}
+      else /* FASTA: raw read() */
+	{ lseek(si->fd, pos, SEEK_SET) ;
+#ifdef __linux__
+	  posix_fadvise(si->fd, 0, 0, POSIX_FADV_SEQUENTIAL) ;
+#endif
+	}
+    }
+
   return si ;
 }
 
@@ -162,7 +237,8 @@ void seqIOclose (SeqIO *si)
 	  seqIOflush (si) ;
 	}
     }
-  free (si->buf) ;
+  if (si->mmapSize) munmap (si->buf, si->mmapSize) ;
+  else free (si->buf) ;
   if (si->seqBuf) free (si->seqBuf) ;
   if (si->qualBuf) free (si->qualBuf) ;
   if (si->gzf) gzclose (si->gzf) ;
@@ -178,24 +254,41 @@ void seqIOclose (SeqIO *si)
   free (si) ;
 }
 
+void seqIOReleaseRead (SeqIO *si)
+{
+#ifdef __linux__
+  if (si->mmapSize)
+    { size_t consumed = (size_t)(si->b - si->buf) & ~(size_t)4095 ;
+      if (consumed > 0) madvise (si->buf, consumed, MADV_DONTNEED) ;
+    }
+#endif
+}
+
 /********** local routines for seqIOread() ***********/
  
+static inline I64 bufRead (SeqIO *si, void *buf, U64 len)
+{ if (si->gzf) return gzread (si->gzf, buf, len) ;
+  ssize_t n = read (si->fd, buf, len) ;
+  return n > 0 ? n : 0 ;
+}
+
 static void bufRefill (SeqIO *si)
-{ si->b -= si->recStart ;		/* will be position after move */
+{ if (si->mmapSize) return ;	/* mmap: entire file mapped, nb==0 means EOF */
+  si->b -= si->recStart ;		/* will be position after move */
   memmove (si->buf, si->buf + si->recStart, si->b - si->buf) ;
   si->idStart -= si->recStart ; si->descStart -= si->recStart ; /* adjust all the offsets */
   si->seqStart -= si->recStart ; si->qualStart -= si->recStart ;
   si->recStart = 0 ;
-  si->nb = gzread (si->gzf, si->b, si->buf + si->bufSize - si->b) ;
+  si->nb = bufRead (si, si->b, si->buf + si->bufSize - si->b) ;
 }
 
 static void bufDouble (SeqIO *si)
-{
+{ if (si->mmapSize) return ;
   char *newbuf = new (si->bufSize*2, char) ;
   memcpy (newbuf, si->buf, si->bufSize) ;
   si->b = newbuf + si->bufSize ; si->nb = si->bufSize ; /* rely on being at end of old buf */
   free (si->buf) ; si->buf = newbuf ;
-  si->nb = gzread (si->gzf, si->b, si->bufSize) ;
+  si->nb = bufRead (si, si->b, si->bufSize) ;
   si->bufSize *= 2 ;
 }
 
@@ -214,11 +307,12 @@ static void bufDouble (SeqIO *si)
   } 
 
 static void bufHardRefill (SeqIO *si, U64 n) /* like bufRefill() but for bufConfirmNbytes() */
-{					     /* NB buf should be big enough because of header */
+{ if (si->mmapSize) return ;
+  /* NB buf should be big enough because of header */
   si->b -= si->recStart ;		/* will be position after move */
   memmove (si->buf, si->buf + si->recStart, si->b - si->buf) ;
   si->recStart = 0 ; si->b = si->buf ;
-  si->nb += gzread (si->gzf, si->b + si->nb, si->bufSize - si->nb) ;
+  si->nb += bufRead (si, si->b + si->nb, si->bufSize - si->nb) ;
   if (si->nb < n) die ("incomplete sequence record %llu", si->line) ;
 }
 
@@ -228,6 +322,7 @@ static void bufHardRefill (SeqIO *si, U64 n) /* like bufRefill() but for bufConf
 
 bool seqIOread (SeqIO *si)
 {
+  si->directBufUsed = false ;
 #ifdef ONEIO
   if (si->type == ONE)
     { OneFile *vf = (OneFile*) si->handle ;
@@ -312,13 +407,14 @@ bool seqIOread (SeqIO *si)
   while (!isspace(*si->b)) bufAdvanceInRecord(si) ;
   si->idLen = si->b - sqioId(si) ;
   if (*si->b != '\n') /* a space or tab - whatever follows on this line is description */
-    { *si->b = 0 ; bufAdvanceInRecord(si) ;
+    { if (!si->mmapSize) *si->b = 0 ;
+      bufAdvanceInRecord(si) ;
       si->descStart = si->b - si->buf ;
       while (*si->b != '\n') bufAdvanceInRecord(si) ;
       si->descLen = si->b - sqioDesc(si) ;
     }
   else { si->descLen = si->descStart = 0 ; }
-  *si->b = 0 ;
+  if (!si->mmapSize) *si->b = 0 ;
   ++si->line ; bufAdvanceInRecord(si) ;	              /* line 2 */
   si->seqStart = si->b - si->buf ;
   if (si->type == FASTA)
@@ -326,26 +422,121 @@ bool seqIOread (SeqIO *si)
 	{ while (*si->b != '\n') bufAdvanceInRecord(si) ;
 	  ++si->line ; bufAdvanceEndRecord(si) ;
 	}
+#ifdef HAVE_AVX2
+      if (si->convert == dna2textN2AConv)
+	{ si->seqLen = convertFilterAVX2 (sqioSeq(si), si->b, si->convert) ; goto fasta_convert_done ; }
+      if (si->convert == dna2index4Conv)
+	{ si->seqLen = convertFilterIndex4AVX2 (sqioSeq(si), si->b, si->convert) ; goto fasta_convert_done ; }
+#endif
       char *s = sqioSeq(si), *t = s ;
       while (s < si->b) if ((*t++ = si->convert[(int)*s++]) < 0) --t ;
       si->seqLen = t - sqioSeq(si) ;
+    fasta_convert_done: ;
     }
   else if (si->type == FASTQ)
-    { while (*si->b != '\n') bufAdvanceInRecord(si) ;
+    { /* Fast path: if the newline is visible in the current buffer, use memchr + AVX2
+	 convert to avoid per-byte bufAdvanceInRecord(); falls through to original code otherwise. */
+      char *nl ;
+#ifdef HAVE_AVX2
+      /* Fused NTA scan+copy for mmap: find newline while copying mmap->seqBuf in one pass,
+	 preventing streaming I/O from evicting hash table entries from L3 cache. */
+      if (si->convert && si->mmapSize)
+	{ U64 scanLimit = si->maxSeqLen > 0 ? (U64)si->maxSeqLen * 2 + 64 : 65536 ;
+	  if (scanLimit > si->nb) scanLimit = si->nb ;
+	  char *dest ;
+	  if (si->directBuf && si->directBufSize >= scanLimit)
+	    dest = si->directBuf ;
+	  else
+	    { if ((I64)scanLimit > si->maxSeqLen)
+		{ if (si->seqBuf) free (si->seqBuf) ;
+		  si->maxSeqLen = scanLimit ;
+		  si->seqBuf = new (si->maxSeqLen + 1, char) ;
+		}
+	      dest = si->seqBuf ;
+	    }
+	  nl = memchr_copy_nta (dest, si->b, '\n', scanLimit) ;
+	  if (nl)
+	    { si->seqLen = nl - si->b ;
+	      dest[si->seqLen] = 0 ;
+	      if (si->convert == dna2textN2AConv)
+		si->seqLen = convertFilterAVX2 (dest, dest + si->seqLen, si->convert) ;
+	      else if (si->convert == dna2index4Conv)
+		si->seqLen = convertFilterIndex4AVX2 (dest, dest + si->seqLen, si->convert) ;
+	      else
+		{ char *s = dest, *end = dest + si->seqLen ;
+		  while (s < end) { *s = si->convert[(int)(unsigned char)*s] ; ++s ; }
+		}
+	      si->directBufUsed = (dest == si->directBuf) ;
+	      si->nb -= (U64)(nl - si->b) ; si->b = nl ;
+	      goto fastq_seq_done ;
+	    }
+	}
+      nl = memchr_nta (si->b, '\n', si->nb) ;
+#else
+      nl = (char *)memchr (si->b, '\n', si->nb) ;
+#endif
+      if (nl)
+	{ si->seqLen = nl - si->b ;
+	  if (si->convert && !si->mmapSize)
+	    {
+#ifdef HAVE_AVX2
+	      if (si->convert == dna2textN2AConv)
+		si->seqLen = convertFilterAVX2(si->b, nl, si->convert) ;
+	      else if (si->convert == dna2index4Conv)
+		si->seqLen = convertFilterIndex4AVX2(si->b, nl, si->convert) ;
+	      else
+#endif
+	      { char *s = si->b ; while (s < nl) { *s = si->convert[(int)*s] ; ++s ; } }
+	    }
+	  else if (si->convert && si->mmapSize)
+	    { /* mmap fallback: fused NTA path missed or no AVX2 */
+	      if (si->seqLen > (I64)si->maxSeqLen)
+		{ if (si->seqBuf) free (si->seqBuf) ;
+		  si->maxSeqLen = si->seqLen ;
+		  si->seqBuf = new (si->maxSeqLen + 1, char) ;
+		}
+	      memcpy (si->seqBuf, si->b, si->seqLen) ;
+	      si->seqBuf[si->seqLen] = 0 ;
+#ifdef HAVE_AVX2
+	      if (si->convert == dna2textN2AConv)
+		si->seqLen = convertFilterAVX2(si->seqBuf, si->seqBuf + si->seqLen, si->convert) ;
+	      else if (si->convert == dna2index4Conv)
+		si->seqLen = convertFilterIndex4AVX2(si->seqBuf, si->seqBuf + si->seqLen, si->convert) ;
+	      else
+#endif
+	      { char *s = si->seqBuf, *end = si->seqBuf + si->seqLen ;
+		while (s < end) { *s = si->convert[(int)(unsigned char)*s] ; ++s ; }
+	      }
+	    }
+	  si->nb -= (U64)(nl - si->b) ; si->b = nl ;
+	  goto fastq_seq_done ;
+	}
+      while (*si->b != '\n') bufAdvanceInRecord(si) ;
       si->seqLen = si->b - sqioSeq(si) ;
       if (si->convert)
 	{ char *s = sqioSeq(si) ;
 	  while (s < si->b) { *s = si->convert[(int)*s] ; ++s ; }
 	}
+    fastq_seq_done:
       ++si->line ; bufAdvanceInRecord(si) ; 	      /* line 3 */
       if (*si->b != '+') die ("missing + FASTQ line %llu", si->line) ;
+#ifdef HAVE_AVX2
+      nl = memchr_nta(si->b, '\n', si->nb) ;
+#else
+      nl = (char *)memchr(si->b, '\n', si->nb) ;
+#endif
+      if (nl) { si->nb -= (U64)(nl - si->b) ; si->b = nl ; goto fastq_plus_done ; }
       while (*si->b != '\n') bufAdvanceInRecord(si) ; /* ignore remainder of + line */
+    fastq_plus_done:
       ++si->line ; bufAdvanceInRecord(si) ;	      /* line 4 */
       si->qualStart = si->b - si->buf ;
+      if (!si->isQual && si->nb > si->seqLen) /* fast skip: quality not needed */
+	{ si->b += si->seqLen ; si->nb -= si->seqLen ; goto fastq_qual_done ; }
       while (*si->b != '\n') bufAdvanceInRecord(si) ;
       if (si->b - si->buf - si->qualStart != si->seqLen)
 	die ("qual not same length as seq line %llu", si->line) ;
       if (si->isQual) { char *q = sqioQual(si), *e = q + si->seqLen ; while (q < e) *q++ -= 33 ; }
+    fastq_qual_done:
       ++si->line ; bufAdvanceEndRecord(si) ;
     }
 
@@ -659,6 +850,10 @@ U8* seqPack (SeqPack *sp, char *s, U8 *u, U64 len) /* compress s into (len+3)/4 
 {
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
+#ifdef HAVE_AVX2
+  if (len > 0 && (unsigned char)s[0] < 4) { seqPackIndex4AVX2 (s, u, len) ; return u0 ; }
+  if (len > 0)                             { seqPackAVX2 (s, u, len) ; return u0 ; }
+#endif
   while (len >= 4)
     { *u++ = pack[(int)s[0]] | (pack[(int)s[1]] << 2) |
 	(pack[(int)s[2]] << 4) | (pack[(int)s[3]] << 6) ;
@@ -677,6 +872,10 @@ U8* seqPackRevComp (SeqPack *sp, char *s, U8 *u, U64 len) /* packs the RC of the
 {
   if (!u) u = new((len+3)/4,U8) ;
   U8 *u0 = u ;
+#ifdef HAVE_AVX2
+  if (len > 0 && (unsigned char)s[0] < 4) { seqPackRevCompIndex4AVX2 (s, u, len) ; return u0 ; }
+  if (len > 0)                             { seqPackRevCompAVX2 (s, u, len) ; return u0 ; }
+#endif
   s += len-4 ;
   while (len >= 4)
     { *u++ = packC[(int)s[3]] | (packC[(int)s[2]] << 2) |
@@ -985,6 +1184,17 @@ int dna2index4Conv[] = {    /* sends N,n to A - NB also 0,1,2,3 maintained */
   -2,  -2,  -2,  -2,   3,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
   -2,   0,  -2,   1,  -2,  -2,  -2,   2,  -2,  -2,  -2,  -2,  -2,  -2,   0,  -2,
   -2,  -2,  -2,  -2,   3,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+} ;
+
+int dna2textN2AConv[] = {    /* sends N,n to A - keeps ASCII */
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2, 'A',  -2, 'C',  -2,  -2,  -2, 'G',  -2,  -2,  -2,  -2,  -2,  -2, 'A',  -2,
+  -2,  -2,  -2,  -2, 'T',  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
+  -2, 'A',  -2, 'C',  -2,  -2,  -2, 'G',  -2,  -2,  -2,  -2,  -2,  -2, 'A',  -2,
+  -2,  -2,  -2,  -2, 'T',  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,  -2,
 } ;
 
 int dna2binaryConv[] = {

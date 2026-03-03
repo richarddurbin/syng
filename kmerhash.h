@@ -47,10 +47,44 @@ bool      kmerHashFindThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf)
 bool      kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) ;
 bool      kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) ; // true if found
 // these versions add/find already packed and correctly oriented kmers
+bool      kmerHashAddThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf) ;
+// CAS-based concurrent insert; buf must be (kh->plen + 2) U64s, zero-initialized; may create holes in pack[]
+bool      kmerHashAddPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC, I64 *batchState) ;
+// like AddThreadSafe but takes pre-packed canonical kmer; batchState is I64[2], zero-initialized per thread
+bool      kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC) ;
+I64       kmerHashCompact (KmerHash *kh) ;
+// remove holes left by CAS races; returns number of holes removed
+void      kmerHashResize (KmerHash *kh) ;
+// call single-threaded between chunks to resize if near capacity
+
+bool      isCanonical (char *dna, int len) ; // true if dna < reverseComplement(dna)
 
 char*     kmerHashSeq (KmerHash *kh, I64 i, char *buf) ; // retrieve i'th sequence (rev-comp if i < 0)
                                                          // buf can be 0, but then not thread-safe
+static inline void kmerHashPrefetch (KmerHash *kh, U64 *packed) // prefetch table entry for packed kmer
+{ __builtin_prefetch (&kh->table[*packed & kh->mask], 1, 1) ; }
+
 #define   kmerHashMax(kh)  ((kh)->max)      // number of stored kmers
+#define   packseq(kh,i)   ((kh)->pack + (i)*(kh)->plen)
+
+// Two-level prefetch helpers: Stage B reads table and prefetches pack; Stage C checks match
+static inline I64 kmerHashPrefetchPack (KmerHash *kh, U64 *packed)
+{ U64 loc = packed[0] & kh->mask ;
+  I64 x = kh->table[loc] ;
+  if (x > 0) __builtin_prefetch (packseq(kh, x), 0, 0) ;
+  return x ;
+}
+
+static inline bool kmerHashMatchAt (KmerHash *kh, U64 *packed, I64 tableVal)
+{ if (tableVal <= 0) return false ;
+  U64 *v = packseq(kh, tableVal) ;
+  int n = kh->plen ;
+  switch (n)
+    { case 1: return packed[0] == v[0] ;
+      case 2: return packed[0] == v[0] && packed[1] == v[1] ;
+      default: while (n--) if (*packed++ != *v++) return false ; return true ;
+    }
+}
 
 #ifdef ONE_DEFINED
 bool      kmerHashWriteOneFile (KmerHash *kh, OneFile *of) ;

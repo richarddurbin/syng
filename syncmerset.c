@@ -84,6 +84,39 @@ void syncmerUpdateMaxCount (SyncmerSet *sms)
   memset (arrayp(sms->thisCount,0,char), 0, arrayMax(sms->thisCount)) ;
 }
 
+I64 syncmerSetCompact (SyncmerSet *sms)
+{ // remove holes in pack[] left by CAS races, remapping count arrays to match
+  KmerHash *kh = sms->kh ;
+  I64 maxOld = kh->max ;
+  I64 size = (I64)1 << kh->dim ;
+  I64 *remap = new0 (maxOld + 1, I64) ;
+  I64 i, newMax = 0 ;
+
+  for (i = 0 ; i < size ; ++i)
+    if (kh->table[i] > 0) remap[kh->table[i]] = 1 ;
+  for (i = 1 ; i <= maxOld ; ++i)
+    if (remap[i]) remap[i] = ++newMax ;
+
+  I64 nHoles = maxOld - newMax ;
+  if (nHoles > 0)
+    { // compact pack[] and count arrays together (remap[i] < i so forward scan is safe)
+      for (i = 1 ; i <= maxOld ; ++i)
+	if (remap[i] && remap[i] != i)
+	  { memcpy (packseq(kh, remap[i]), packseq(kh, i), kh->plen * sizeof(U64)) ;
+	    arr(sms->count, remap[i], I64) = arr(sms->count, i, I64) ;
+	    arr(sms->maxCount, remap[i], char) = arr(sms->maxCount, i, char) ;
+	  }
+      // remap table entries
+      for (i = 0 ; i < size ; ++i)
+	if (kh->table[i] > 0)
+	  kh->table[i] = remap[kh->table[i]] ;
+      kh->max = newMax ;
+    }
+
+  newFree (remap, maxOld + 1, I64) ;
+  return nHoles ;
+}
+
 // syncmerSetWrite takes *of not filename so can record sources in upstream file
 
 bool syncmerSetWrite (SyncmerSet *sms, OneFile *of) 

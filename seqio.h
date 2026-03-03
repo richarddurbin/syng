@@ -79,6 +79,10 @@ typedef struct {
   void *handle;			/* used for ONEseq, BAM */
   SeqPack  *seqPack ;
   QualPack *qualPack ;
+  size_t    mmapSize ;		/* if > 0, buf is mmap'd read-only (no in-place modify) */
+  char     *directBuf ;		/* if set, mmap FASTQ writes here instead of seqBuf */
+  size_t    directBufSize ;	/* capacity of directBuf */
+  bool      directBufUsed ;	/* set by seqIOread when directBuf was used */
 } SeqIO ;
 
 /* Reads/writes FASTA or FASTQ, gzipped or not, ONEseq, SAM/BAM/CRAM and a custom packed binary. */
@@ -90,7 +94,8 @@ SeqIO  *seqIOopenRead (char *filename, int* convert, bool isQual) ; /* can use "
 bool    seqIOread (SeqIO *si) ;
 #define sqioId(si)   ((si)->buf+(si)->idStart)
 #define sqioDesc(si) ((si)->buf+(si)->descStart)
-#define sqioSeq(si)  ((si)->type >= BINARY ? (si)->seqBuf : (si)->buf+(si)->seqStart)
+#define sqioSeq(si)  ((si)->directBufUsed ? (si)->directBuf : \
+                      (si)->seqBuf ? (si)->seqBuf : (si)->buf+(si)->seqStart)
 #define sqioQual(si) ((si)->type >= BINARY ? (si)->qualBuf : (si)->buf+(si)->qualStart)
 
 void    seqIOreferenceFileName (char *refFileName) ; /* resets this (globally) for CRAM */
@@ -100,6 +105,7 @@ void    seqIOwrite (SeqIO *si, char *id, char *desc, U64 seqLen, char *seq, char
 void    seqIOflush (SeqIO *si) ;	/* NB writes are buffered, so need this to ensure in file */
 
 void    seqIOclose (SeqIO *si) ;	/* will flush file opened for writing */
+void    seqIOReleaseRead (SeqIO *si) ;  /* release consumed mmap pages from RSS */
 
 /* For ONEcode files, instead of seqio opening the file you can pass the OneCode handle. */
 /* The handle must have primary type seq and support at least this schema (it can contain more). */
@@ -126,6 +132,7 @@ extern int dna2textAmbigConv[] ;
 extern int dna2textAmbig2NConv[] ;
 extern int dna2indexConv[] ;
 extern int dna2index4Conv[] ;
+extern int dna2textN2AConv[] ;
 extern int dna2binaryConv[] ;
 extern int dna2binaryAmbigConv[] ;
 static const char index2char[] = "acgtn" ;

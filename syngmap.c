@@ -11,7 +11,11 @@
  */
 
 #include "syng.h"
+#ifdef USE_CSYNCMER
+#include "syncmer_iter.h"
+#else
 #include "seqhash.h"
+#endif
 
 typedef struct {
   I32 seq, pos ;
@@ -80,7 +84,11 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 	{ int j, nG = 0 ;
 	  char *s = seq ;
 	  for (j = 0 ; j < si->seqLen ; ++j)
+#ifdef USE_CSYNCMER
+	    if (*s++ != 'G') nG = 0 ;
+#else
 	    if (*s++ != 2) nG = 0 ;
+#endif
 	    else if (++nG > filterG) { si->seqLen = 0 ; break ; }
 	}
       if (filterQ && si->avQ < filterQ) si->seqLen = 0 ;
@@ -98,12 +106,13 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
     }
 
   newFree (uBuf, ti->kh->plen, U64) ;
+  syncmerThreadCleanup () ;
   return 0 ;
 }
 
 /****************************************************/
 
-static char *usage = 
+static char *usage =
   "Usage: syngmap [options]* <.1khash file> <.1gbwt file> <sequence file>\n"
   "possible options are:\n"
   "  -T <threads>           : [8] number of threads\n"
@@ -144,7 +153,11 @@ int main (int argc, char *argv[])
   if (!ofK) die ("failed to open .1khash file %s", argv[0]) ;
   OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", 1) ;
   if (!ofGBWT) die ("failed to open .1gbwt file %s", argv[1]) ;
+#ifdef USE_CSYNCMER
+  SeqIO   *sio = seqIOopenRead (argv[2], dna2textN2AConv, false) ;
+#else
   SeqIO   *sio = seqIOopenRead (argv[2], dna2index4Conv, false) ;
+#endif
   if (!sio) die ("failed to open sequence file %s", argv[2]) ;
 
   // this will be our output file

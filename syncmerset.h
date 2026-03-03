@@ -38,11 +38,28 @@ void        syncmerSetDestroy (SyncmerSet *sms) ;
 bool        syncmerSetWrite (SyncmerSet *sms, OneFile *of) ;
 SyncmerSet *syncmerSetRead (char *filename) ;
 void        syncmerUpdateMaxCount (SyncmerSet *sms) ;
+I64         syncmerSetCompact (SyncmerSet *sms) ; // remove CAS holes from kh, count, maxCount
 
 static inline void syncmerAdd (SyncmerSet *sms, char *s, I64 *index)
 { bool added = kmerHashAdd (sms->kh, s, index) ;
   if (index)
     { I64 i = (*index < 0) ? -*index : *index ;
+      if (added)
+	{ array(sms->count, i, I64)++ ;
+	  array(sms->thisCount, i, char) = 1 ;
+	}
+      else
+	{ arr(sms->count, i, I64)++ ;
+	  if (++arr(sms->thisCount, i, I64) & 0x80) arr(sms->thisCount,i,I64) = 0x7f ;
+	}
+    }
+}
+
+static inline void syncmerAddPacked (SyncmerSet *sms, U64 *packed, bool isRC, I64 *index)
+{ bool added = kmerHashAddPacked (sms->kh, packed, index) ;
+  if (index)
+    { if (isRC) *index = -*index ;
+      I64 i = (*index < 0) ? -*index : *index ;
       if (added)
 	{ array(sms->count, i, I64)++ ;
 	  array(sms->thisCount, i, char) = 1 ;

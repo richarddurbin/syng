@@ -64,7 +64,11 @@ bool modNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 // (closed) syncmer extracts w-mers that end with a minimal kmer
 // these provide a cover, and have good distribution properties
 SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len) ;
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len) ;
 bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
+
+// no-op: seeded hash path has no thread-local buffers to clean up
+static inline void syncmerThreadCleanup (void) {}
 
 // utilities
 static inline U64 kHash (Seqhash *sh, U64 k) { return ((k * sh->factor1) >> sh->shift1) ; }

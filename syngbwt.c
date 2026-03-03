@@ -782,11 +782,9 @@ static void *threadRead (void *arg)
 	  { 
 	  case 'E':
 	    eIn[inN].sync = oneInt(of,0) ; inOff[inN] = oneInt(of,1) ; eIn[inN].count = oneInt(of,2) ;
-	    if (eIn[inN].sync == 0) startCountAdd (sb, i, eIn[inN].count) ; // start node
 	    ++inN ; ++rt->eTotal ; break ;
 	  case 'e':
 	    eOut[outN].sync = oneInt(of,0) ; outOff[outN] = oneInt(of,1) ; eOut[outN].count = oneInt(of,2) ;
-	    if (eOut[outN].sync == 0) startCountAdd (sb, -i, eOut[outN].count) ; // start node
 	    ++outN ; ++rt->eTotal ; break ;
 	  case 'B':
 	    oil = oneIntList(of) ;
@@ -868,6 +866,27 @@ SyngBWT *syngBWTread (OneFile *of)
       eTotal += rt[i].eTotal ;
     }
   fprintf (stdout, "read GBWT with %lld vertices and %lld edges\n", nv, eTotal) ;
+
+  // build startHash from node data (must be single-threaded — hashAdd is not thread-safe)
+  for (i = 1 ; i <= nv ; ++i)
+    { U8 s = arr(sb->status, i, U8) ;
+      if (!s) continue ;
+      if (s & NODE_SIMPLE)
+	{ SimpleNode *sn = &arr(sb->node, i, Node).simple ;
+	  if (sn->in == 0) startCountAdd (sb, i, sn->inCount) ;
+	  if (sn->out == 0) startCountAdd (sb, -i, sn->outCount) ;
+	}
+      else
+	{ ComplexNode *cn = &arr(sb->node, i, Node).complex ;
+	  SyncCount *sc = cn->sc ;
+	  int j ;
+	  for (j = 0 ; j < cn->inN ; ++j)
+	    if (sc[j].sync == 0) startCountAdd (sb, i, sc[j].count) ;
+	  sc += cn->inN ;
+	  for (j = 0 ; j < cn->outN ; ++j)
+	    if (sc[j].sync == 0) startCountAdd (sb, -i, sc[j].count) ;
+	}
+    }
 
   newFree (threads, nThread, pthread_t) ;
   newFree (rt, nThread, ReadThread) ;
