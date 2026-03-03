@@ -80,6 +80,9 @@ typedef struct {
   SeqPack  *seqPack ;
   QualPack *qualPack ;
   size_t    mmapSize ;		/* if > 0, buf is mmap'd read-only (no in-place modify) */
+  char     *directBuf ;		/* if set, mmap FASTQ writes here instead of seqBuf */
+  size_t    directBufSize ;	/* capacity of directBuf */
+  bool      directBufUsed ;	/* set by seqIOread when directBuf was used */
 } SeqIO ;
 
 /* Reads/writes FASTA or FASTQ, gzipped or not, ONEseq, SAM/BAM/CRAM and a custom packed binary. */
@@ -91,7 +94,8 @@ SeqIO  *seqIOopenRead (char *filename, int* convert, bool isQual) ; /* can use "
 bool    seqIOread (SeqIO *si) ;
 #define sqioId(si)   ((si)->buf+(si)->idStart)
 #define sqioDesc(si) ((si)->buf+(si)->descStart)
-#define sqioSeq(si)  ((si)->seqBuf ? (si)->seqBuf : (si)->buf+(si)->seqStart)
+#define sqioSeq(si)  ((si)->directBufUsed ? (si)->directBuf : \
+                      (si)->seqBuf ? (si)->seqBuf : (si)->buf+(si)->seqStart)
 #define sqioQual(si) ((si)->type >= BINARY ? (si)->qualBuf : (si)->buf+(si)->qualStart)
 
 void    seqIOreferenceFileName (char *refFileName) ; /* resets this (globally) for CRAM */

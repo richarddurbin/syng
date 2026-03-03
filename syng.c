@@ -60,97 +60,312 @@ static OutType outType = NONE ;
 #define PF_DIST2  8
 #define PF_TOTAL (PF_DIST + PF_DIST2)
 
+// 3-stage prefetch pipeline: pack kmer → prefetch hash table → match/add.
+// Processes a pre-computed position array (from multi-read SIMD path).
+static inline void processSyncmerPositions (
+    ThreadInfo *ti, char *seq, uint32_t *positions, uint8_t *strands, size_t count,
+    U64 *pipePack, int *pipePos, bool *pipeIsRC, I64 *pipeTableVal, I64 *batchState)
+{
+  KmerHash *kh = ti->kh ;
+  int plen = kh->plen ;
+  size_t posIdx = 0 ;
+  int nFilled = 0 ;
+  bool hasMore = true ;
+
+  while (nFilled < PF_TOTAL && posIdx < count)
+    { int pos = (int)positions[posIdx] ;
+      pipePos[nFilled] = pos ;
+      pipeIsRC[nFilled] = !isCanonical (seq+pos, kh->len) ;
+      U64 *pk = pipePack + nFilled * plen ;
+      if (pipeIsRC[nFilled]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+      else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+      __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+      nFilled++ ; posIdx++ ;
+    }
+  if (posIdx >= count) hasMore = false ;
+
+  int nB = nFilled < PF_DIST2 ? nFilled : PF_DIST2 ;
+  for (int b = 0 ; b < nB ; ++b)
+    pipeTableVal[b] = kmerHashPrefetchPack (kh, pipePack + b * plen) ;
+
+  int nProcessed = 0 ;
+  while (nProcessed < nFilled)
+    { int slotC = nProcessed % PF_TOTAL ;
+      U64 *pkC = pipePack + slotC * plen ;
+      // Stage C: match/add — packed kmer is now in cache from earlier prefetch
+      I64 sync = 0 ;
+      if (kmerHashMatchAt (kh, pkC, pipeTableVal[slotC]))
+	sync = pipeIsRC[slotC] ? -pipeTableVal[slotC] : pipeTableVal[slotC] ;
+      else if (ti->isAdd)
+	kmerHashAddPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC], batchState) ;
+      else if (pipeTableVal[slotC] > 0)
+	kmerHashFindPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC]) ;
+      if (sync > 2 || sync < -2 || !sync)
+	{ SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
+	  sp->pos = pipePos[slotC] ;
+	  sp->sync = sync ;
+	}
+      // Stage B: read table slot + prefetch packed kmer for item PF_DIST2 ahead
+      if (nProcessed + PF_DIST2 < nFilled)
+	{ int slotB = (nProcessed + PF_DIST2) % PF_TOTAL ;
+	  pipeTableVal[slotB] = kmerHashPrefetchPack (kh, pipePack + slotB * plen) ;
+	}
+      // Stage A: pack kmer + prefetch table slot for next item (reuses freed slot)
+      if (hasMore)
+	{ int pos = (int)positions[posIdx] ;
+	  pipePos[slotC] = pos ;
+	  pipeIsRC[slotC] = !isCanonical (seq+pos, kh->len) ;
+	  U64 *pk = pipePack + slotC * plen ;
+	  if (pipeIsRC[slotC]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+	  nFilled++ ; posIdx++ ;
+	  if (posIdx >= count) hasMore = false ;
+	}
+      nProcessed++ ;
+    }
+}
+
+// Same pipeline but fed by syncmerIterator (for single-read / non-CSYNCMER path).
+static inline void processIteratorPipeline (
+    ThreadInfo *ti, SeqhashIterator *sit, char *seq,
+    U64 *pipePack, int *pipePos, bool *pipeIsRC, I64 *pipeTableVal, I64 *batchState)
+{
+  KmerHash *kh = ti->kh ;
+  int plen = kh->plen ;
+  int pos ;
+  int nFilled = 0 ;
+  bool hasMore = true ;
+
+  while (nFilled < PF_TOTAL && syncmerNext (sit, 0, &pos, 0))
+    { pipePos[nFilled] = pos ;
+      pipeIsRC[nFilled] = !isCanonical (seq+pos, kh->len) ;
+      U64 *pk = pipePack + nFilled * plen ;
+      if (pipeIsRC[nFilled]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+      else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+      __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+      nFilled++ ;
+    }
+  if (nFilled < PF_TOTAL) hasMore = false ;
+
+  int nB = nFilled < PF_DIST2 ? nFilled : PF_DIST2 ;
+  for (int b = 0 ; b < nB ; ++b)
+    pipeTableVal[b] = kmerHashPrefetchPack (kh, pipePack + b * plen) ;
+
+  int nProcessed = 0 ;
+  while (nProcessed < nFilled)
+    { int slotC = nProcessed % PF_TOTAL ;
+      U64 *pkC = pipePack + slotC * plen ;
+      // Stage C: match/add
+      I64 sync = 0 ;
+      if (kmerHashMatchAt (kh, pkC, pipeTableVal[slotC]))
+	sync = pipeIsRC[slotC] ? -pipeTableVal[slotC] : pipeTableVal[slotC] ;
+      else if (ti->isAdd)
+	kmerHashAddPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC], batchState) ;
+      else if (pipeTableVal[slotC] > 0)
+	kmerHashFindPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC]) ;
+      if (sync > 2 || sync < -2 || !sync)
+	{ SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
+	  sp->pos = pipePos[slotC] ;
+	  sp->sync = sync ;
+	}
+      // Stage B: read table + prefetch pack for item PF_DIST2 ahead
+      if (nProcessed + PF_DIST2 < nFilled)
+	{ int slotB = (nProcessed + PF_DIST2) % PF_TOTAL ;
+	  pipeTableVal[slotB] = kmerHashPrefetchPack (kh, pipePack + slotB * plen) ;
+	}
+      // Stage A: pack + prefetch table for next syncmer
+      if (hasMore)
+	{ if (syncmerNext (sit, 0, &pos, 0))
+	    { pipePos[slotC] = pos ;
+	      pipeIsRC[slotC] = !isCanonical (seq+pos, kh->len) ;
+	      U64 *pk = pipePack + slotC * plen ;
+	      if (pipeIsRC[slotC]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	      else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
+	      __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
+	      nFilled++ ;
+	    }
+	  else hasMore = false ;
+	}
+      nProcessed++ ;
+    }
+}
+
+#ifdef USE_CSYNCMER
+#define MULTI_THRESHOLD 32768
+#define MULTI_BATCH_SZ 8
+#define BUCKET_SHIFT 11          // 2048 bases per bucket
+#define N_BUCKETS    16          // covers reads up to K + 16*2048 ≈ 33K bases
+#define CHUNK_SIZE   1024        // reads per chunk — arena fits in L2/L3
+
+typedef struct {
+  char *seq[MULTI_BATCH_SZ] ;
+  int   len[MULTI_BATCH_SZ] ;
+  int   idx[MULTI_BATCH_SZ] ;   // index within chunk (0..CHUNK_SIZE-1)
+  int   n ;
+} LenBucket ;
+
+typedef struct {
+  uint32_t *positions ;          // points into arena
+  uint8_t  *strands ;
+  size_t    count ;
+} ReadSyncmers ;
+
+// Fire one bucket through multi-read SIMD, writing directly into arena.
+// Each lane gets a reserved slot of maxPerRead entries; no intermediate copy.
+static inline void fireBucket (
+    LenBucket *bk, Seqhash *sh, ReadSyncmers *readSync,
+    size_t maxPerRead, size_t *arenaUsed,
+    uint32_t *arenaPos, uint8_t *arenaStr,
+    uint8_t *workBuf, size_t workBufSize)
+{
+  if (bk->n == 0) return ;
+
+  // Point each lane's output directly into arena
+  uint32_t *dPos[MULTI_BATCH_SZ] ;
+  uint8_t  *dStr[MULTI_BATCH_SZ] ;
+  size_t base = *arenaUsed ;
+  for (int b = 0 ; b < bk->n ; ++b)
+    { dPos[b] = arenaPos + base + b * maxPerRead ;
+      dStr[b] = arenaStr + base + b * maxPerRead ;
+    }
+  for (int b = bk->n ; b < MULTI_BATCH_SZ ; ++b)
+    { dPos[b] = NULL ; dStr[b] = NULL ; }
+
+  size_t bCounts[MULTI_BATCH_SZ] ;
+  syncmerMultiRead (sh, bk->seq, bk->len, bk->n,
+		    dPos, dStr, maxPerRead, bCounts,
+		    workBuf, workBufSize) ;
+
+  for (int b = 0 ; b < bk->n ; ++b)
+    { ReadSyncmers *rs = &readSync[bk->idx[b]] ;
+      rs->count = bCounts[b] ;
+      rs->positions = dPos[b] ;
+      rs->strands = dStr[b] ;
+    }
+  *arenaUsed = base + (size_t)bk->n * maxPerRead ;
+  bk->n = 0 ;
+}
+#endif
+
 static void *threadProcessSequences (void* arg) // find the start positions of all the syncmers
 {
   ThreadInfo *ti = (ThreadInfo*) arg ;
   int i ;
-  I64 seqStart = 0 ;
   KmerHash *kh = ti->kh ;
   int plen = kh->plen ;
+  int K = ti->sh->w + ti->sh->k - 1 ;
 
-  // Pipeline buffers: per-slot packed kmer, position, orientation, pre-read table value
+  // Pipeline buffers
   U64  *pipePack = new0(PF_TOTAL * plen, U64) ;
   int   pipePos[PF_TOTAL] ;
   bool  pipeIsRC[PF_TOTAL] ;
   I64   pipeTableVal[PF_TOTAL] ;
-  I64   batchState[2] = {0, 0} ; // batch ID state shared across all insertions in this thread
+  I64   batchState[2] = {0, 0} ; // batch ID state for thread-safe insertions
 
   arrayMax(ti->syncPos) = 0 ;
 
+  int nSeqs = arrayMax(ti->seqInfo) ;
   SeqhashIterator *sit = NULL ;
-  for (i = 0 ; i < arrayMax(ti->seqInfo) ; ++i)
+
+#ifdef USE_CSYNCMER
+  // Short reads (< MULTI_THRESHOLD) use 8-lane SIMD syncmer detection;
+  // long reads (genomes, contigs) fall through to the single-read iterator.
+
+  LenBucket buckets[N_BUCKETS] ;
+  ReadSyncmers chunkSync[CHUNK_SIZE] ;
+  bool chunkIsMulti[CHUNK_SIZE] ;
+  char *chunkSeqPtr[CHUNK_SIZE] ;
+
+  size_t maxPerRead = 4 * MULTI_THRESHOLD / (ti->sh->w + 1) ;
+  if (maxPerRead < 64) maxPerRead = 64 ;
+  size_t arenaSize = CHUNK_SIZE * maxPerRead ;
+  uint32_t *arenaPos = (uint32_t *)malloc (arenaSize * sizeof(uint32_t)) ;
+  uint8_t  *arenaStr = (uint8_t *)malloc (arenaSize) ;
+
+  size_t workBufSize = syncmerMultiWorkBufSize (ti->sh, MULTI_THRESHOLD) ;
+  uint8_t *workBuf = (uint8_t *)aligned_alloc (32, workBufSize) ;
+
+  I64 ss = 0 ;
+  for (int chunkStart = 0 ; chunkStart < nSeqs ; chunkStart += CHUNK_SIZE)
+    { int chunkEnd = chunkStart + CHUNK_SIZE ;
+      if (chunkEnd > nSeqs) chunkEnd = nSeqs ;
+      int chunkN = chunkEnd - chunkStart ;
+
+      for (int b = 0 ; b < N_BUCKETS ; ++b) buckets[b].n = 0 ;
+      memset (chunkSync, 0, chunkN * sizeof(ReadSyncmers)) ;
+      size_t arenaUsed = 0 ;
+
+      for (int ci = 0 ; ci < chunkN ; ++ci)
+	{ int gi = chunkStart + ci ;  // global index
+	  I64 seqLen = arrp(ti->seqInfo, gi, SeqInfo)->len ;
+	  chunkSeqPtr[ci] = arrp(ti->seq, ss, char) ;
+	  ss += seqLen ;
+	  if (seqLen < MULTI_THRESHOLD && seqLen >= K)
+	    { chunkIsMulti[ci] = true ;
+	      int bi = (int)((seqLen - K) >> BUCKET_SHIFT) ;
+	      if (bi >= N_BUCKETS) bi = N_BUCKETS - 1 ;
+	      LenBucket *bk = &buckets[bi] ;
+	      bk->seq[bk->n] = chunkSeqPtr[ci] ;
+	      bk->len[bk->n] = (int)seqLen ;
+	      bk->idx[bk->n] = ci ;
+	      bk->n++ ;
+	      if (bk->n == MULTI_BATCH_SZ)
+		fireBucket (bk, ti->sh, chunkSync, maxPerRead,
+			    &arenaUsed, arenaPos, arenaStr,
+			    workBuf, workBufSize) ;
+	    }
+	  else
+	    chunkIsMulti[ci] = false ;
+	}
+      for (int bi = 0 ; bi < N_BUCKETS ; ++bi) // flush partial buckets
+	fireBucket (&buckets[bi], ti->sh, chunkSync, maxPerRead,
+		     &arenaUsed, arenaPos, arenaStr,
+		     workBuf, workBufSize) ;
+
+      // replay chunk in seqInfo order: multi-read results from arena, long reads via iterator
+      for (int ci = 0 ; ci < chunkN ; ++ci)
+	{ int gi = chunkStart + ci ;
+	  I64 seqLen = arrp(ti->seqInfo, gi, SeqInfo)->len ;
+	  char *seq = chunkSeqPtr[ci] ;
+	  int spStart = arrayMax(ti->syncPos) ;
+
+	  if (chunkIsMulti[ci])
+	    { ReadSyncmers *rs = &chunkSync[ci] ;
+	      if (rs->count > 0)
+		processSyncmerPositions (ti, seq, rs->positions, rs->strands,
+					rs->count, pipePack, pipePos, pipeIsRC,
+					pipeTableVal, batchState) ;
+	    }
+	  else if (seqLen >= K)
+	    { if (!sit) sit = syncmerIterator (ti->sh, seq, seqLen) ;
+	      else syncmerIteratorReinit (sit, seq, seqLen) ;
+	      processIteratorPipeline (ti, sit, seq, pipePack, pipePos,
+				       pipeIsRC, pipeTableVal, batchState) ;
+	    }
+	  arrp(ti->seqInfo, gi, SeqInfo)->nSync = arrayMax(ti->syncPos) - spStart ;
+	  arrp(ti->seqInfo, gi, SeqInfo)->inSource = 0 ;
+	}
+    } // chunks
+
+  free (arenaPos) ; free (arenaStr) ; free (workBuf) ;
+
+#else // !USE_CSYNCMER
+  I64 seqStart = 0 ;
+  for (i = 0 ; i < nSeqs ; ++i)
     { I64 seqLen = arrp(ti->seqInfo, i, SeqInfo)->len ;
       char *seq = arrp(ti->seq, seqStart, char) ;
       seqStart += seqLen ;
-      int pos, spStart = arrayMax(ti->syncPos) ;
+      int spStart = arrayMax(ti->syncPos) ;
       if (!sit) sit = syncmerIterator (ti->sh, seq, seqLen) ;
       else syncmerIteratorReinit (sit, seq, seqLen) ;
-
-      // Phase 1: fill pipeline with PF_TOTAL entries (Stage A: pack + prefetch table)
-      int nFilled = 0 ;
-      bool hasMore = true ;
-      while (nFilled < PF_TOTAL && syncmerNext (sit, 0, &pos, 0))
-	{ int slot = nFilled ;
-	  pipePos[slot] = pos ;
-	  pipeIsRC[slot] = !isCanonical (seq+pos, kh->len) ;
-	  U64 *pk = pipePack + slot * plen ;
-	  if (pipeIsRC[slot]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
-	  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
-	  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
-	  nFilled++ ;
-	}
-      if (nFilled < PF_TOTAL) hasMore = false ;
-
-      // Phase 2: Stage B for first min(nFilled,PF_DIST2) items (read table, prefetch pack)
-      int nB = nFilled < PF_DIST2 ? nFilled : PF_DIST2 ;
-      for (int b = 0 ; b < nB ; ++b)
-	pipeTableVal[b] = kmerHashPrefetchPack (kh, pipePack + b * plen) ;
-
-      // Phase 3: main loop - three stages per iteration
-      int nProcessed = 0 ;
-      while (nProcessed < nFilled)
-	{ int slotC = nProcessed % PF_TOTAL ;
-	  U64 *pkC = pipePack + slotC * plen ;
-
-	  // Stage C: check pre-read table value against packed kmer (pack now in cache)
-	  I64 sync = 0 ;
-	  if (kmerHashMatchAt (kh, pkC, pipeTableVal[slotC]))
-	    sync = pipeIsRC[slotC] ? -pipeTableVal[slotC] : pipeTableVal[slotC] ;
-	  else if (ti->isAdd)
-	    kmerHashAddPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC], batchState) ;
-	  else if (pipeTableVal[slotC] > 0) // collision in find mode: continue probing
-	    kmerHashFindPackedThreadSafe (kh, pkC, &sync, pipeIsRC[slotC]) ;
-	  if (sync > 2 || sync < -2 || !sync)
-	    { SyncPos *sp = arrayp(ti->syncPos, arrayMax(ti->syncPos), SyncPos) ;
-	      sp->pos = pipePos[slotC] ;
-	      sp->sync = sync ;
-	    }
-
-	  // Stage B: read table + prefetch pack for item PF_DIST2 ahead
-	  int bIdx = nProcessed + PF_DIST2 ;
-	  if (bIdx < nFilled)
-	    { int slotB = bIdx % PF_TOTAL ;
-	      pipeTableVal[slotB] = kmerHashPrefetchPack (kh, pipePack + slotB * plen) ;
-	    }
-
-	  // Stage A: pack + prefetch table for new item (reuse freed slot)
-	  if (hasMore)
-	    { if (syncmerNext (sit, 0, &pos, 0))
-		{ pipePos[slotC] = pos ;
-		  pipeIsRC[slotC] = !isCanonical (seq+pos, kh->len) ;
-		  U64 *pk = pipePack + slotC * plen ;
-		  if (pipeIsRC[slotC]) seqPackRevComp (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
-		  else seqPack (kh->seqPack, seq+pos, (U8*)pk, kh->len) ;
-		  __builtin_prefetch (&kh->table[pk[0] & kh->mask], 0, 0) ;
-		  nFilled++ ;
-		}
-	      else hasMore = false ;
-	    }
-	  nProcessed++ ;
-	}
+      processIteratorPipeline (ti, sit, seq, pipePack, pipePos,
+			       pipeIsRC, pipeTableVal, batchState) ;
       arrp(ti->seqInfo, i, SeqInfo)->nSync = arrayMax(ti->syncPos) - spStart ;
-      arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ; // ensure not used in output loop
+      arrp(ti->seqInfo, i, SeqInfo)->inSource = 0 ;
     }
+#endif
+
   if (sit) seqhashIteratorDestroy (sit) ;
   syncmerThreadCleanup () ;
 

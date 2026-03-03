@@ -33,6 +33,40 @@ char* seqIOtypeName[] = { "unknown", "fasta", "fastq", "binary", "onecode", "bam
 
 #ifdef HAVE_AVX2
 #include "avx2.h"
+#include <immintrin.h>
+
+/* NTA-prefetched memchr: data enters L1 and at most one L3 way,
+   preventing streaming I/O scans from evicting hash table entries. */
+__attribute__((target("avx2")))
+static inline char *memchr_nta(const char *s, int c, size_t n) {
+    __m256i target = _mm256_set1_epi8((char)c);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        _mm_prefetch(s + i + 512, _MM_HINT_NTA);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(s + i));
+        int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, target));
+        if (mask) return (char*)(s + i + __builtin_ctz(mask));
+    }
+    for (; i < n; i++) if (s[i] == (char)c) return (char*)(s + i);
+    return NULL;
+}
+
+/* Fused scan+copy with NTA prefetch: scans for byte c while copying src to dst.
+   Returns pointer into src at the found byte, or NULL if not found within n bytes. */
+__attribute__((target("avx2")))
+static inline char *memchr_copy_nta(char *dst, const char *src, int c, size_t n) {
+    __m256i target = _mm256_set1_epi8((char)c);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        _mm_prefetch(src + i + 512, _MM_HINT_NTA);
+        __m256i v = _mm256_loadu_si256((const __m256i*)(src + i));
+        _mm256_storeu_si256((__m256i*)(dst + i), v);
+        int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, target));
+        if (mask) return (char*)(src + i + __builtin_ctz(mask));
+    }
+    for (; i < n; i++) { dst[i] = src[i]; if (src[i] == (char)c) return (char*)(src + i); }
+    return NULL;
+}
 #endif
 
 SeqIO *seqIOopenRead (char *filename, int* convert, bool isQual)
@@ -288,6 +322,7 @@ static void bufHardRefill (SeqIO *si, U64 n) /* like bufRefill() but for bufConf
 
 bool seqIOread (SeqIO *si)
 {
+  si->directBufUsed = false ;
 #ifdef ONEIO
   if (si->type == ONE)
     { OneFile *vf = (OneFile*) si->handle ;
@@ -401,7 +436,45 @@ bool seqIOread (SeqIO *si)
   else if (si->type == FASTQ)
     { /* Fast path: if the newline is visible in the current buffer, use memchr + AVX2
 	 convert to avoid per-byte bufAdvanceInRecord(); falls through to original code otherwise. */
-      char *nl = (char *)memchr(si->b, '\n', si->nb) ;
+      char *nl ;
+#ifdef HAVE_AVX2
+      /* Fused NTA scan+copy for mmap: find newline while copying mmap->seqBuf in one pass,
+	 preventing streaming I/O from evicting hash table entries from L3 cache. */
+      if (si->convert && si->mmapSize)
+	{ U64 scanLimit = si->maxSeqLen > 0 ? (U64)si->maxSeqLen * 2 + 64 : 65536 ;
+	  if (scanLimit > si->nb) scanLimit = si->nb ;
+	  char *dest ;
+	  if (si->directBuf && si->directBufSize >= scanLimit)
+	    dest = si->directBuf ;
+	  else
+	    { if ((I64)scanLimit > si->maxSeqLen)
+		{ if (si->seqBuf) free (si->seqBuf) ;
+		  si->maxSeqLen = scanLimit ;
+		  si->seqBuf = new (si->maxSeqLen + 1, char) ;
+		}
+	      dest = si->seqBuf ;
+	    }
+	  nl = memchr_copy_nta (dest, si->b, '\n', scanLimit) ;
+	  if (nl)
+	    { si->seqLen = nl - si->b ;
+	      dest[si->seqLen] = 0 ;
+	      if (si->convert == dna2textN2AConv)
+		si->seqLen = convertFilterAVX2 (dest, dest + si->seqLen, si->convert) ;
+	      else if (si->convert == dna2index4Conv)
+		si->seqLen = convertFilterIndex4AVX2 (dest, dest + si->seqLen, si->convert) ;
+	      else
+		{ char *s = dest, *end = dest + si->seqLen ;
+		  while (s < end) { *s = si->convert[(int)(unsigned char)*s] ; ++s ; }
+		}
+	      si->directBufUsed = (dest == si->directBuf) ;
+	      si->nb -= (U64)(nl - si->b) ; si->b = nl ;
+	      goto fastq_seq_done ;
+	    }
+	}
+      nl = memchr_nta (si->b, '\n', si->nb) ;
+#else
+      nl = (char *)memchr (si->b, '\n', si->nb) ;
+#endif
       if (nl)
 	{ si->seqLen = nl - si->b ;
 	  if (si->convert && !si->mmapSize)
@@ -416,7 +489,7 @@ bool seqIOread (SeqIO *si)
 	      { char *s = si->b ; while (s < nl) { *s = si->convert[(int)*s] ; ++s ; } }
 	    }
 	  else if (si->convert && si->mmapSize)
-	    { /* mmap is read-only: copy into seqBuf, then convert in-place */
+	    { /* mmap fallback: fused NTA path missed or no AVX2 */
 	      if (si->seqLen > (I64)si->maxSeqLen)
 		{ if (si->seqBuf) free (si->seqBuf) ;
 		  si->maxSeqLen = si->seqLen ;
@@ -447,7 +520,11 @@ bool seqIOread (SeqIO *si)
     fastq_seq_done:
       ++si->line ; bufAdvanceInRecord(si) ; 	      /* line 3 */
       if (*si->b != '+') die ("missing + FASTQ line %llu", si->line) ;
-      nl = (char *)memchr(si->b, '\n', si->nb) ; /* ignore remainder of + line */
+#ifdef HAVE_AVX2
+      nl = memchr_nta(si->b, '\n', si->nb) ;
+#else
+      nl = (char *)memchr(si->b, '\n', si->nb) ;
+#endif
       if (nl) { si->nb -= (U64)(nl - si->b) ; si->b = nl ; goto fastq_plus_done ; }
       while (*si->b != '\n') bufAdvanceInRecord(si) ; /* ignore remainder of + line */
     fastq_plus_done:

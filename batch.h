@@ -12,15 +12,33 @@ static U64 fillBatch (SeqIO *sio, ThreadInfo *ti, int nThread, U64 *totSeqOut)
     { arrayMax(ti[i].seq) = 0 ;
       arrayMax(ti[i].seqInfo) = 0 ;
       int seqStart = 0 ;
+      /* Pre-grow for direct-write if mmap FASTQ */
+      if (sio->mmapSize)
+        { U64 room = sio->maxSeqLen > 0 ? (U64)sio->maxSeqLen * 2 + 64 : 65536 ;
+          array(ti[i].seq, seqStart + room, char) = 0 ;
+          sio->directBuf = arrp(ti[i].seq, seqStart, char) ;
+          sio->directBufSize = room ;
+        }
       while (arrayMax(ti[i].seq) < 100<<20 && seqIOread (sio))
         { arrayp(ti[i].seqInfo, arrayMax(ti[i].seqInfo), SeqInfo)->len = sio->seqLen ;
           array(ti[i].seq, seqStart+sio->seqLen, char) = 0 ;
-          memcpy (arrp(ti[i].seq, seqStart, char), sqioSeq(sio), sio->seqLen) ;
+          if (!sio->directBufUsed)
+            memcpy (arrp(ti[i].seq, seqStart, char), sqioSeq(sio), sio->seqLen) ;
           seqStart += sio->seqLen ;
           *totSeqOut += sio->seqLen ;
+          /* Set up directBuf for next read */
+          if (sio->mmapSize)
+            { U64 room = sio->maxSeqLen > 0 ? (U64)sio->maxSeqLen * 2 + 64 : 65536 ;
+              array(ti[i].seq, seqStart + room, char) = 0 ;
+              sio->directBuf = arrp(ti[i].seq, seqStart, char) ;
+              sio->directBufSize = room ;
+            }
         }
+      arrayMax(ti[i].seq) = seqStart ; /* undo pre-grow inflation */
       filled += arrayMax(ti[i].seq) ;
     }
+  sio->directBuf = NULL ;
+  sio->directBufSize = 0 ;
   seqIOReleaseRead (sio) ;
   return filled ;
 }

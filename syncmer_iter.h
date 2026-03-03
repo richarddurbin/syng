@@ -51,6 +51,14 @@ static void seqhashIteratorDestroy (SeqhashIterator *si)
   free (si->batch_strands) ;
   free (si) ; }
 
+// multi-read SIMD: process up to 8 short reads in parallel across AVX2 lanes
+// work_buf/work_buf_size: pre-allocated buffer (NULL to auto-allocate)
+void syncmerMultiRead (Seqhash *sh, char *seqs[8], int lens[8], int n,
+                       uint32_t *positions[8], uint8_t *strands[8],
+                       size_t max_per_read, size_t counts[8],
+                       uint8_t *work_buf, size_t work_buf_size) ;
+size_t syncmerMultiWorkBufSize (Seqhash *sh, size_t max_read_len) ;
+
 // call before thread exit to free thread-local SIMD lane buffers
 void syncmerThreadCleanup (void) ;
 
