@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  1 11:04 2026 (rd109)
+ * Last edited: Mar  4 00:47 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -65,7 +65,7 @@ typedef union {
 
 typedef struct {
   U32 count ;
-  union { U32 sCount ; U32 max ; } ;
+  union { U32 sCount ; U32 max ; U32 sum ; } ;
   union { U32 up ; U32 nSym ; } ;
   union { U32 down ; U32 free ; U32 depth ; } ; // down == 0 at bottom row
   union { U32 right ; U32 maxDepth ; } ;
@@ -76,13 +76,15 @@ typedef struct {
   union { U32 iSym ; I32 sym ; } ; // iSym in nodes, sym in directory
 } Dynamic ;			   // version for building - max is number of nodes used
 // nodes 1..nSym are directory entries; node[s+1].right points to actual top node for sIndex s
-// node[s+1].down = depth of top node for s, node[s+1].sCount = total count of s
+// node[s+1].depth = depth of top node for s, node[s+1].sum = total count of s
+// node[s+1].count is used by syng code for the directory count for incoming not outgoing edges
+// after building node[s+1].count == node[s+1].sum, but not during building
 // start is the iSym whose column has maximal depth over all
 
 typedef struct {
   U32 sum, sSum ; // sSum & FLAG32 indicates bottom row, in which case mask it with MASK32
   union { U32 right ; U32 max ; U32 offset ; } ;
-  union { U32 sRight ; U32 start ; U32 count ; } ; 
+  union { U32 sRight ; U32 start ; U32 count ; } ;  // for FIXED_SYNG directory count == sum
   union { U32 iSym ; U32 down ; U32 nSym ; I32 sym ; } ;
 } Fixed ; 			// locked node
 
@@ -97,6 +99,7 @@ typedef struct {
   U16 offset ;
 } LinearSyngDir ;
 static inline LinearSyngDir *linearSyngDir (Rskip rs) { return (LinearSyngDir*) (rs.linear+2) ;  }
+// a list of nSym of these following the header contains the directory information for syng
 
 #define RSKIP_DEFINED
 
@@ -179,7 +182,7 @@ Rskip rsCreate (int nSym, I32 *symbol)
 Rskip rsCreateSyng (int nSym, I32 *symbol, U32 *offset)
 { Rskip rs ;
   int nNode = 2 * nSym ; // initial allowance for 2 per symbol
-  int y = 2 + 4*nSym + nNode, max = 16 ; while (max < y) max <<= 1 ;
+  int max = 16, y = 2 + 4*nSym + nNode ; while (max < y) max <<= 1 ;
   if (max <= MAX_LINEAR)
     { rs = rsNew (LINEAR_SYNG, nSym, max) ;
       for (LinearSyngDir *lsd = linearSyngDir (rs) ; nSym-- ; ++lsd)
@@ -187,7 +190,7 @@ Rskip rsCreateSyng (int nSym, I32 *symbol, U32 *offset)
     }
   else
     { nNode = 3*nSym ; // need to allow for some depth
-      y = 1 + nSym + nNode ; max = 128 ; while (max < y) max <<= 1 ;
+      max = 128 ; y = 1 + nSym + nNode ; while (max < y) max <<= 1 ;
       rs = rsNew (DYNAMIC, nSym, max) ;
       for (Dynamic *node = rs.dynamic + 1 ; nSym-- ; ++node)
 	{ node->sym = *symbol++ ; node->offset = *offset++ ; }
@@ -255,7 +258,7 @@ static void rsPrint (Rskip rs)
 	}
       else if (rsType(rs) == LINEAR)
 	for (i = 0 ; i < nSym ; ++i, node += 2)
-	  printf (" DIR %2u sym %d count %u\n", i, *(I32*)node, node[1].bigCount) ;
+	  printf (" DIR %2u sym %d\n", i, *(I32*)node) ;
       int sum = 0, sSum[nSym] ; memset (sSum, 0, nSym*sizeof(int)) ;
       int j = 0 ;
       node = rs.linear + rs.linear->max - 1 ;
@@ -273,8 +276,8 @@ static void rsPrint (Rskip rs)
       printf ("Dynamic max %u nSym %u start %u maxDepth %u free %u\n",
 	      node->max, node->nSym, node->start, node->maxDepth, node->free) ;
       for (i = 1 ; i <= rs.dynamic->nSym ; ++i)
-	printf (" DIR %3d: sym %8d offset %3u count %4u right %3u depth %2u\n",
-		i, node[i].sym, node[i].offset, node[i].count, node[i].right, node[i].down) ;
+	printf (" DIR %3d: sym %8d offset %3u count %4u right %3u depth %2u sum %d\n", i,
+		node[i].sym, node[i].offset, node[i].count, node[i].right, node[i].down, node[i].sum) ;
       for (i = rs.dynamic->free + 1 ; i < rs.dynamic->max ; ++i)
         printDynamic (&node[i], i) ;
     }
@@ -283,7 +286,8 @@ static void rsPrint (Rskip rs)
       Fixed *node = rs.fixed ;
       printf ("Fixed max %u nSym %u start %u\n", node->max, node->nSym, node->start) ;
       for (++node, i = 1 ; i <= rs.fixed->nSym ; ++i, ++node)
-	printf (" DIR %3d: sym %8d offset %3u count %u\n", i, node->sym, node->offset, node->count) ;
+	printf (" DIR %3d: sym %8d offset %3u count %u sum %d\n",
+		i, node->sym, node->offset, node->count, node->sum) ;
       for ( ; i < rs.fixed->max ; ++i, ++node) printFixed (node, i) ;
     }
 }
@@ -307,14 +311,6 @@ static bool rsCheck (Rskip rs)
 	  else
 	    kCount[is] += ic ;
 	}
-      if (rsType(rs) == LINEAR_SYNG)
-	{ LinearSyngDir *lsd = linearSyngDir(rs) ;
-	  for (int i = 0 ; i < nSym ; ++i)
-	    if (lsd[i].count != kCount[i])
-	      { printf ("--linear dir %d count %d != measured %d\n", i, lsd[i].count, kCount[i]) ;
-		isBad = true ;
-	      }
-	}
     }
   else if (rs.dynamic->max)
     { Dynamic *node = rs.dynamic ;
@@ -322,7 +318,7 @@ static bool rsCheck (Rskip rs)
 
       // check directory entries
       for (int i = 1 ; i <= nSym ; ++i)
-	if (node[i].count)
+	if (node[i].sum)
 	  { if (!node[i].right)
 	      { printf ("-- dir node %d has null right\n", i) ; isBad = true ; }
 	    // verify depth by walking down from the top node
@@ -366,6 +362,8 @@ static bool rsCheck (Rskip rs)
 		    { printf ("-- node %d sym %d != sRight %d sym %d\n", j, node[j].iSym,
 			      node[j].sRight, node[node[j].sRight].iSym) ; isBad = true ; }
 		}
+	      //if (!node[j].count)
+	      //  { printf ("--node %d has no counts\n", j) ; isBad = true ; }
 	    }
 	}
     }
@@ -393,15 +391,15 @@ static void checkSymRuns (int nSym, int nRun, I64 *iSym, I64 *runLen) // die on 
 
 static int linearSize (int type, int nSym, int nRun, I64 *runLen)
 {
-  I64 sum = 0, count = 2 + nRun ; // 2 for the header, nRun provisionally for runs
+  I64 sum = 0, size = 2 + nRun ; // 2 for the header, nRun provisionally for runs
   for (int i = 0 ; i < nRun ; ++i)
-    { if (runLen[i] >= 255) { ++count ; if (runLen[i] > MAX_BIG) { count = MAX_LINEAR+1 ; break ; } }
+    { if (runLen[i] >= 255) { ++size ; if (runLen[i] > MAX_BIG) { size = MAX_LINEAR+1 ; break ; } }
       sum += runLen[i] ;
     }
-  if (sum > MAX_BIG) count = MAX_LINEAR+1 ;
-  if (type == LINEAR) count += 2*nSym ; // for symbol directory
-  else if (type == LINEAR_SYNG) count += 4*nSym ; // for symbol, offset, count directory
-  return count ;
+  if (sum > MAX_BIG) size = MAX_LINEAR+1 ;
+  if (type == LINEAR) size += 2*nSym ; // for symbol directory
+  else if (type == LINEAR_SYNG) size += 4*nSym ; // for symbol, offset, count directory
+  return size ;
 }
 
 static bool fillLinearNodes (Rskip rs, int nRun, I64 *iSym, I64 *runLen)
@@ -410,21 +408,16 @@ static bool fillLinearNodes (Rskip rs, int nRun, I64 *iSym, I64 *runLen)
   checkSymRuns (rs.linear->nSym, nRun, iSym, runLen) ;
   Linear *node = rs.linear + rs.linear->max - 1 ;
   Linear *min = rs.linear + 2 ;
-  U16 count[rs.linear->nSym] ;
   U64 total = 0 ;
 
-  if (rsType(rs) == LINEAR_SYNG)
-    { min += 4*rs.linear->nSym ;
-      memset (count, 0, rs.linear->nSym*sizeof(U16)) ;
-    }
-  else if (rsType(rs) == LINEAR)
-    min += 2*rs.linear->nSym ;
+  if (rsType(rs) == LINEAR_SYNG) min += 4*rs.linear->nSym ;
+  else if (rsType(rs) == LINEAR) min += 2*rs.linear->nSym ;
 
   for (int i = 0 ; i < nRun ; ++i, --node)
     { if (!runLen[i]) continue ;
       if (node < min) return false ;
       node->iSym = iSym[i] ;
-      count[iSym[i]] += runLen[i] ; total += runLen[i] ;
+      total += runLen[i] ;
       if (runLen[i] < 255)
 	node->count = runLen[i] ;
       else if (runLen[i] <= MAX_BIG)
@@ -437,11 +430,6 @@ static bool fillLinearNodes (Rskip rs, int nRun, I64 *iSym, I64 *runLen)
     return false ;
   
   rs.linear[1].free = node - rs.linear ; // next available free node
-  if (rsType(rs) == LINEAR_SYNG)
-    { LinearSyngDir *lsd = linearSyngDir (rs) ;
-      for (int s = 0 ; s < rs.linear->nSym ; ++s, ++lsd)
-	lsd->count = count[s] ;
-    }
       
   return true ;
 }
@@ -529,7 +517,8 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
   rs.fixed->start = iSym[0] + sOff ; // actual start
   rs.fixed->nSym = nSym ;
   if (type == FIXED_SYNG || type == FIXED) // record the counts per symbol
-    for (s = 0 ; s < nSym ; ++s) node[1+s].count = node[sStack[s][sMaxDepth[s]-1]].sSum & MASK32 ;
+    for (s = 0 ; s < nSym ; ++s)
+      node[1+s].sum = node[1+s].count = node[sStack[s][sMaxDepth[s]-1]].sSum & MASK32 ;
   return rs ;
 }
 
@@ -602,7 +591,7 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
   for (s = 0 ; s < nSym ; ++s)
     { node[s+1].right = sTop[s] ;      // index of top node for this symbol
       node[s+1].depth = sMaxDepth[s] ; // depth of that column
-      node[s+1].count = sSum[s] ;      // total count of this symbol
+      node[s+1].sum = sSum[s] ;        // total number of this symbol
       node[s+1].sym = s ;              // default symbol id
     }
   return rs ;
@@ -613,15 +602,18 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
 Rskip rsBuildFixedSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSym, I64 *runLen)
 // this is used when building from data stored in a .1gbwt OneFile
 {
-  Rskip rs ;
+  Rskip rs ; rs.linear = 0 ;
   int size = linearSize (LINEAR_SYNG, nSym, nRun, runLen) ;
   if (size <= MAX_LINEAR) // build in Linear nodes
     { rs = rsNew (LINEAR_SYNG, nSym, size) ; 
-      if (!fillLinearNodes (rs, nRun, iSym, runLen)) die ("screwup filling linear") ;
-      for (LinearSyngDir *lsd = linearSyngDir (rs) ; nSym-- ; ++lsd)
-	{ lsd->sym = *symbol++ ; lsd->offset = *offset++ ; }
+      if (fillLinearNodes (rs, nRun, iSym, runLen))
+	{ for (LinearSyngDir *lsd = linearSyngDir (rs) ; nSym-- ; ++lsd)
+	    { lsd->sym = *symbol++ ; lsd->offset = *offset++ ; }
+	}
+      else rs.linear = 0 ;
     }
-  else
+
+  if (!rs.linear)
     { rs = buildFixed (FIXED_SYNG, nSym, nRun, iSym, runLen) ;
       for (Fixed *node = rs.fixed + 1 ; nSym-- ; ++node)
 	{ node->sym = *symbol++ ; node->offset = *offset++ ; }
@@ -668,7 +660,7 @@ static inline int linearSpace (Rskip rs)
 }
 
 static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
-// NB this increments the directory count because fillLinearNodes() and buildDynamic() do that
+// NB this increments the dynamic directory sum because buildDynamic() does that
 {
   static int callCount = 0 ; ++callCount ;
   // if (callCount == DEBUG) printf ("rebuildAddLinear callCount %d\n", callCount) ;
@@ -950,20 +942,9 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	    return rsError (RS_ERROR_INDEX_OVERFLOW, "rsAdd", "index %u > sum %d", k, sum) ;
 	}
       else if (sym == kSym) // just increment the counter, except for edge cases
-	{ if (rsType(rs) == LINEAR_SYNG)
-	    { U16 *dirCount = &(linearSyngDir(rs)[kSym].count) ;
-	      if (*dirCount < MAX_BIG)
-		{ if (count < 254) { ++node->count ; ++*dirCount ; }
-		  else if (count > 254 && count < MAX_BIG) { ++node->bigCount ; ++*dirCount ; }
-		  else *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
-		}
-	      else  *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
-	    }
-	  else
-	    { if (count < 254) ++node->count ;
-	      else if (count > 254 && count < MAX_BIG) ++node->bigCount ;
-	      else  *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
-	    }
+	{ if (count < 254) ++node->count ;
+	  else if (count > 254 && count < MAX_BIG) ++node->bigCount ;
+	  else *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
 	  sSum -= (sum - k) ;
 	}
       else
@@ -994,7 +975,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	      if (d)
 		{ node[rs.dynamic->free].up = next ; next = rs.dynamic->free-- ; nd->down = next ; }
 	    }
-	  ++rs.dynamic[1+kSym].count ;
+	  ++rs.dynamic[1+kSym].sum ;
 	  rs.dynamic->maxDepth = rs.dynamic[1+kSym].depth = newDepth ;
 	  return 0 ; // rank has to be 0
 	}
@@ -1031,6 +1012,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	}
       // printf ("rsAddDirect DYNAMIC callCount %d k %d sum %d iLeft %d iRight %d\n", callCount, k, sum, iLeft, iRight) ;
       if (k > sum) die ("k %u > sum %d in rsAddDirect dynamic", k, sum) ;
+      if (!iLeft && !k) sum = 0 ; // deal with 0 case protected above
 
       // now build new columns if necessary, not yet incrementing for the new count
       int isLeft, isRight ; // we will also need these below
@@ -1067,7 +1049,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	      if (newDepth + (kSym == nSym) > dynamicSpace (rs))
 		return rebuildAddDynamic (rsp, k, kSym) ;
 	      // before we add the column we must find isLeft and isRight
-	      if (kSym == rs.dynamic->nSym || !rs.dynamic[1+kSym].count)
+	      if (kSym == rs.dynamic->nSym || !rs.dynamic[1+kSym].sum)
 		isLeft = isRight = 0 ;
 	      else
 		{ for (isLeft = iLeft ; isLeft ; isLeft = node[isLeft].left) // LINEAR in ALPHABET
@@ -1095,8 +1077,8 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	      addColumn (rs, kSym, newDepth, k,
 			 iLeft, iRight, iLeft ? node[iLeft].count : 0, 0,
 			 isLeft, isRight, isLeft ? node[isLeft].sCount : 0, 0) ;
-	      if (DEBUG && !rsCheck (rs))
-		die ("failed rsCheck after insert addColumn: callCount %d", callCount) ;
+	      	      if (DEBUG && !rsCheck (rs))
+	      		die ("failed rsCheck after insert addColumn: callCount %d", callCount) ;
 	      // now reset iLeft and isLeft to the bottom of the new column
 	      isLeft = iLeft = iLeft ? node[iLeft].right : node[iRight].left ;
 	      // iRight = node[iLeft].right ; isRight = node[isLeft].sRight ; // should not change
@@ -1130,7 +1112,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	{ while (isRight && !node[isRight].up) isRight = node[isRight].sRight ;
 	  if (isRight) { isRight = node[isRight].up ; if (isRight) ++node[isRight].sBefore ; }
 	}
-      ++node[kSym+1].count ; // update directory total
+      ++node[kSym+1].sum ; // update directory total
       if (DEBUG && !rsCheck (rs))
 	die ("failed rsCheck after increments: callCount %d", callCount) ;
       return sSum ; // this is the only ultimate real return location for Dynamic
@@ -1227,8 +1209,7 @@ static int count (Rskip rs, int kSym)	// how many of symbol
   // static int callCount = 0 ; ++callCount ;
   if (kSym == rsNsym(rs)) return 0 ; // new symbol
   if (rs.linear->max) // linear
-    { if (rsType(rs) == LINEAR_SYNG) return linearSyngDir(rs)[kSym].count ;
-      int i, sSum = 0 ;
+    { int i, sSum = 0 ;
       Linear *node = rs.linear + rs.linear->max - 1 ;
       for (i = rs.linear->max ; --i > rs.linear[1].free ; --node)
 	if (node->count < 255) { if (node->iSym == kSym) sSum += node->count ; }
@@ -1236,9 +1217,9 @@ static int count (Rskip rs, int kSym)	// how many of symbol
       return sSum ;
     }
   else if (rs.dynamic->max) // dynamic - O(1) lookup from directory
-    return rs.dynamic[kSym+1].count ;
+    return rs.dynamic[kSym+1].sum ;
   else // fixed
-    { if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) return rs.fixed[kSym+1].count ;
+    { if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) return rs.fixed[kSym+1].sum ;
       U32 i ;
       Fixed *node = rs.fixed ;
       for (i = kSym+1 ; node[i].sRight ; i = node[i].sRight) { ; }
