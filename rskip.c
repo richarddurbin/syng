@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  4 00:47 2026 (rd109)
+ * Last edited: Mar  9 10:17 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -215,6 +215,23 @@ int rsNsym (Rskip rs)
   else return rs.fixed->nSym ;
 }
 
+int rsSize (Rskip rs, int *linearSize, int *skipSize) // returns max, fills others with byte size
+{
+  if (!rs.linear) return 0 ;
+  if (rs.linear->max)
+    { if (linearSize) *linearSize = rs.linear->max * sizeof(LINEAR) ;
+      return rs.linear->max ;
+    }
+  else if (rs.dynamic->max)
+    { if (skipSize) *skipSize = rs.dynamic->max * sizeof(DYNAMIC) ;
+      return rs.dynamic->max ;
+    }
+  else
+    { if (skipSize) *skipSize = rs.dynamic->max * sizeof(FIXED) ;
+      return rs.fixed->max ;
+    }
+}
+
 /********************* some debugging support  **********************/
 
 static void inline printDynamic (Dynamic *n, int i)
@@ -222,13 +239,13 @@ static void inline printDynamic (Dynamic *n, int i)
   if (n->down) // not at bottom
     { Dynamic *n1 = n ;
       int d = 1, i1 = i ; while (n1->down) { int i2 = n1->down ; n1 += (i2-i1) ; i1 = i2 ; ++d ; }
-      printf (" %3d: iSym %2d depth %2u down %3u up %3u left %3u before %3u right %3u count %3u "
+      printf ("    %3d: iSym %2d depth %2u down %3u up %3u left %3u before %3u right %3u count %3u "
 	      "sLeft %3u sBefore %3u sRight %3u sCount %3u\n",
 	      i, n->iSym, d, n->down, n->up, n->left, n->before, n->right, n->count, 
 	      n->sLeft, n->sBefore, n->sRight, n->sCount) ;
     }
   else  // at bottom
-    printf (" %3d: iSym %2u depth  1 down   0 up %3u left %3u before %3u right %3u count %3u "
+    printf ("    %3d: iSym %2u depth  1 down   0 up %3u left %3u before %3u right %3u count %3u "
 	    "sLeft %3u sBefore %3u sRight %3u sCount %3u\n",
 	    i, n->iSym, n->up, n->left, n->before, n->right, n->count, 
 	    n->sLeft, n->sBefore, n->sRight, n->sCount) ;
@@ -237,14 +254,14 @@ static void inline printDynamic (Dynamic *n, int i)
 static void inline printFixed (Fixed *n, int i)
 {
   if (n->sSum & FLAG32) // at bottom
-    printf (" %u: iSym %u sum %u right %u sSum %u sRight %u\n",
+    printf ("    %u: iSym %u sum %u right %u sSum %u sRight %u\n",
            i, n->iSym, n->sum, n->right, n->sSum & MASK32, n->sRight) ;
   else
-    printf (" %u:        sum %u right %u sSum %u sRight %u down %u\n",
+    printf ("    %u:        sum %u right %u sSum %u sRight %u down %u\n",
            i, n->sum, n->right, n->sSum, n->sRight, n->down) ;
 }
 
-static void rsPrint (Rskip rs)
+void rsPrint (Rskip rs)
 {
   if (rs.linear->max)
     { U32 i ;
@@ -254,18 +271,18 @@ static void rsPrint (Rskip rs)
       if (rsType(rs) == LINEAR_SYNG)
 	{ LinearSyngDir *lsd = linearSyngDir (rs) ;
 	  for (i = 0 ; i < nSym ; ++i, ++lsd)
-	    printf (" DIR %2u sym %d offset %u count %u\n", i, lsd->sym, lsd->offset, lsd->count) ;
+	    printf ("    DIR %2u sym %d offset %u count %u\n", i, lsd->sym, lsd->offset, lsd->count) ;
 	}
       else if (rsType(rs) == LINEAR)
 	for (i = 0 ; i < nSym ; ++i, node += 2)
-	  printf (" DIR %2u sym %d\n", i, *(I32*)node) ;
+	  printf ("    DIR %2u sym %d\n", i, *(I32*)node) ;
       int sum = 0, sSum[nSym] ; memset (sSum, 0, nSym*sizeof(int)) ;
       int j = 0 ;
       node = rs.linear + rs.linear->max - 1 ;
       for (i = rs.linear->max ; --i > rs.linear[1].free ; --node)
         { int count = (node->count == 255) ? node[-1].bigCount : node->count ;
           sum += count ; sSum[node->iSym] += count ;
-          printf (" %d: i %u iSym %u count %u sum %u sSum %u\n",
+          printf ("    %d: i %u iSym %u count %u sum %u sSum %u\n",
 		  ++j, i, node->iSym, count, sum, sSum[node->iSym]) ;
           if (node->count == 255) { --i ; --node ; }
         }
@@ -275,18 +292,20 @@ static void rsPrint (Rskip rs)
       Dynamic *node = rs.dynamic ;
       printf ("Dynamic max %u nSym %u start %u maxDepth %u free %u\n",
 	      node->max, node->nSym, node->start, node->maxDepth, node->free) ;
-      for (i = 1 ; i <= rs.dynamic->nSym ; ++i)
-	printf (" DIR %3d: sym %8d offset %3u count %4u right %3u depth %2u sum %d\n", i,
-		node[i].sym, node[i].offset, node[i].count, node[i].right, node[i].down, node[i].sum) ;
-      for (i = rs.dynamic->free + 1 ; i < rs.dynamic->max ; ++i)
-        printDynamic (&node[i], i) ;
+      if (rs.dynamic->nSym < 30)
+	for (i = 1 ; i <= rs.dynamic->nSym ; ++i)
+	  printf ("    DIR %3d: sym %8d offset %3u count %4u right %3u depth %2u sum %d\n", i,
+		  node[i].sym, node[i].offset, node[i].count, node[i].right, node[i].down, node[i].sum) ;
+      if (rs.dynamic->max < 500)
+	for (i = rs.dynamic->free + 1 ; i < rs.dynamic->max ; ++i)
+	  printDynamic (&node[i], i) ;
     }
   else
     { U32 i ;
       Fixed *node = rs.fixed ;
       printf ("Fixed max %u nSym %u start %u\n", node->max, node->nSym, node->start) ;
       for (++node, i = 1 ; i <= rs.fixed->nSym ; ++i, ++node)
-	printf (" DIR %3d: sym %8d offset %3u count %u sum %d\n",
+	printf ("    DIR %3d: sym %8d offset %3u count %u sum %d\n",
 		i, node->sym, node->offset, node->count, node->sum) ;
       for ( ; i < rs.fixed->max ; ++i, ++node) printFixed (node, i) ;
     }
@@ -329,7 +348,7 @@ static bool rsCheck (Rskip rs)
 	      }
 	  }
 
-      // find the left-most node
+      // find the leftmost node
       int i = rs.dynamic->start ;
       while (true)
 	if (node[i].left) i = node[i].left ;
@@ -646,9 +665,7 @@ Rskip rsBuildDynamicSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSy
 
 /****************************** code to add ****************************/
 
-// first we have a version that converts linear to I64 list then rebuilds
-
-static inline int linearSpace (Rskip rs)
+static inline int linearSpace (Rskip rs) // returns number of Linear structs available
 {
   switch (rsType(rs))
     {
@@ -658,6 +675,8 @@ static inline int linearSpace (Rskip rs)
     }
   return 0 ;
 }
+
+// first we have a version that converts linear to I64 list then rebuilds
 
 static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
 // NB this increments the dynamic directory sum because buildDynamic() does that
@@ -737,27 +756,20 @@ static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
   bool isDone = false ;
   if (nAdded <= linearSpace(rs))
     { if (fillLinearNodes (rs, nRun, iSym, runLen))
-	{ if (kSym == nSym)
-	    { if (rsType(rs) == LINEAR) *(I32*)(rs.linear+1+2*nSym) = nSym ; // use unchanged nSym
-	      else if (rsType(rs) == LINEAR_SYNG) *(I32*)(rs.linear+1+4*nSym) = nSym ;
-	    }
-	  isDone = true ;
-	}
+	isDone = true ;
     }
   else if (rs.linear->max <= MAX_LINEAR/2)
     { Rskip rsOut = rsNew (rsType(rs), rs.linear->nSym, 2*rs.linear->max) ;
       if (rsType(rs) == LINEAR)
-	{ memcpy (rsOut.linear+1, rs.linear+1, 2*nSym*sizeof(Linear)) ;
-	  if (kSym == nSym) *(I32*)(rsOut.linear+1+2*nSym) = nSym ; // as above
-	}
+	memcpy (rsOut.linear+2, rs.linear+2, 2*nSym*sizeof(Linear)) ;
       else if (rsType(rs) == LINEAR_SYNG)
-	{ memcpy (rsOut.linear+1, rs.linear+1, 4*nSym*sizeof(Linear)) ;
-	  if (kSym == nSym) *(I32*)(rsOut.linear+1+4*nSym) = nSym ; // as above
+	memcpy (rsOut.linear+2, rs.linear+2, 4*nSym*sizeof(Linear)) ;
+      if (fillLinearNodes (rsOut, nRun, iSym, runLen))
+	{ rsDestroy (rs) ;
+	  rs = rsOut ;
+	  isDone = true ;
 	}
-      rsDestroy (rs) ;
-      rs = rsOut ;
-      if (fillLinearNodes (rs, nRun, iSym, runLen)) // must come after the memcpy so .count is correct
-	isDone = true ;
+      else rsDestroy (rsOut) ;
     }
 
   if (!isDone) // we have to convert to dynamic
@@ -766,10 +778,9 @@ static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
 	for (int i = 0 ; i < nSym ; ++i) rsOut.dynamic[1+i].sym = *(I32*)(rs.linear + 2 + 2*i) ;
       else if (rsType(rs) == LINEAR_SYNG)
 	{ LinearSyngDir *lsd = linearSyngDir (rs) ;
-	  for (int i = 0 ; i < nSym ; ++i, ++lsd)
-	    { rsOut.dynamic[1+i].sym = lsd->sym ;
-	      rsOut.dynamic[1+i].offset = lsd->offset ;
-	    }
+	  Dynamic *node = rsOut.dynamic + 1 ;
+	  for (int i = 0 ; i < nSym ; ++i, ++lsd, ++node)
+	    { node->sym = lsd->sym ; node->offset = lsd->offset ; node->count = lsd->count ; }
 	} 
       rsDestroy (rs) ;
       rs = rsOut ;
@@ -781,42 +792,73 @@ static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
   return rs ;
 }
 
-static int addDirect (Rskip *rsp, U32 k, U32 kSym) ; // forward declaration
-
-static int rebuildAddDynamic (Rskip *rsp, U32 k, U32 kSym) // extends space then recurses
+static bool doubleLinear (Rskip *rsp) // extends space
 {
+  // Strategy is to double the size of the Dynamic array, copy the header and directory
+  // and move everything else up to the new space at the end, also increasing free accordingly.
   Rskip rs = *rsp ;
-  Rskip rsNew ;
+  int oldMax = rs.linear->max ;
+  int newMax = oldMax * 2 ;
+  int nSym = rs.linear->nSym ;
+
+  if (newMax > MAX_LINEAR) return false ;
+  
+  // allocate new array with doubled size
+  Rskip rs2 = rsNew (rsType(rs), nSym, newMax) ;
+
+  Linear *nOld = rs.linear ; // origin of old data - indices start at 1
+  Linear *nNew = rs2.linear ; // origin of new data
+
+  // copy header and directory entries
+  int nHeader = 2 ;
+  if (rsType(rs) == LINEAR_SYNG) nHeader += 4*nSym ;
+  else if (rsType(rs) == LINEAR) nHeader += 2*nSym ;
+  memcpy (nNew, nOld, nHeader*sizeof(Linear)) ; 
+  rs2.linear->max = newMax ; // need to change this
+
+  // calculate offset for moving nodes: they move them from the node above free upwards
+  int offset = newMax - oldMax ;
+  rs2.linear[1].free = rs.linear[1].free + offset ;
+  memcpy (nNew + rs2.linear[1].free + 1, nOld + rs.linear[1].free + 1,
+	  (oldMax - rs.linear[1].free - 1)*sizeof(Linear)) ;
+
+  rsDestroy (rs) ;
+  *rsp = rs2 ;
+  return true ;
+}
+
+static Rskip doubleDynamic (Rskip *rsp) // extends space
+{
   // Strategy is to double the size of the Dynamic array, leave 0..nSym-1 alone,
   // and move everything else up to the new space at the end, also increasing free
   // accordingly. All pointers need to be updated accordingly.
-
+  Rskip rs = *rsp ;
   int oldMax = rs.dynamic->max ;
   int newMax = oldMax * 2 ;
   int nSym = rs.dynamic->nSym ;
   
   // allocate new array with doubled size
-  rsNew.dynamic = new0 (newMax, Dynamic) ;
+  Rskip rs2 = rsNew (DYNAMIC, nSym, newMax) ;
 
   // copy header node (node 0)
   Dynamic *nOld = rs.dynamic ; // origin of old data - indices start at 1
-  Dynamic *nNew = rsNew.dynamic ; // origin of new data
+  Dynamic *nNew = rs2.dynamic ; // origin of new data
 
   // copy header and directory entries 1..nSym (leave them in place)
   memcpy (nNew, nOld, (1+nSym)*sizeof(Dynamic)) ; 
-  rsNew.dynamic->max = newMax ; // need to change this
+  rs2.dynamic->max = newMax ; // need to change this
 
   // calculate offset for moving nodes: they move them from the node above free upwards
   int offset = newMax - oldMax ;
-  rsNew.dynamic->free = rs.dynamic->free + offset ;
-  memcpy (nNew + rsNew.dynamic->free + 1, nOld + rs.dynamic->free + 1,
+  rs2.dynamic->free = rs.dynamic->free + offset ;
+  memcpy (nNew + rs2.dynamic->free + 1, nOld + rs.dynamic->free + 1,
 	  (oldMax - rs.dynamic->free - 1)*sizeof(Dynamic)) ;
 
   // update directory entries (1..nSym): only .right is a node pointer (.down is depth)
   for (int i = 1 ; i <= nSym ; ++i)
     if (nNew[i].right) nNew[i].right += offset ;
   // update all pointers in the used nodes (free+offset..newMax)
-  for (int i = rsNew.dynamic->free + 1 ; i < newMax ; ++i)
+  for (int i = rs2.dynamic->free + 1 ; i < newMax ; ++i)
     { Dynamic *node = &nNew[i] ;
       if (node->right) node->right += offset ;
       if (node->left) node->left += offset ;
@@ -825,11 +867,11 @@ static int rebuildAddDynamic (Rskip *rsp, U32 k, U32 kSym) // extends space then
       if (node->up) node->up += offset ;
       if (node->down) node->down += offset ;
     }
-  rsNew.dynamic->start += offset ; // also need this
+  rs2.dynamic->start += offset ; // also need this
 
   rsDestroy (rs) ;
-  *rsp = rsNew ;
-  return addDirect (rsp, k, kSym) ; // recursion
+  *rsp = rs2 ;
+  return rs2 ;
 }
 
 // some functions we need for the dynamic case
@@ -946,6 +988,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	  else if (count > 254 && count < MAX_BIG) ++node->bigCount ;
 	  else *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
 	  sSum -= (sum - k) ;
+	  if (sSum < 0) die ("sSum %d < 0 in addDirect callCount %d", sSum, callCount) ;
 	}
       else
 	*rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
@@ -960,13 +1003,16 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
       if (callCount == DEBUG)
 	printf ("addDirect dynamic callCount %d k %u kSym %u\n", callCount, k, kSym) ;
 
-#define DO_I_NEED_THIS
-#ifdef DO_I_NEED_THIS
+#define I_NEED_THIS // though I think I should be able to remove it given changes elsewhere...
+#ifdef I_NEED_THIS
       // special case the initial node
       if (!rs.dynamic->start)
 	{ if (k) die ("rsAddDirect problem - k %d with empty Dynamic", k) ;
 	  int newDepth = randomDepth() ;
-	  if (newDepth > dynamicSpace (rs)) return rebuildAddDynamic (rsp, k, kSym) ;
+	  if (newDepth > dynamicSpace (rs))
+	    { doubleDynamic (rsp) ;
+	      return addDirect (rsp, k, kSym) ; // recurse
+	    }
 	  if (kSym == nSym) ++rs.dynamic->nSym ;
 	  U32 next = rs.dynamic->start = rs.dynamic[1+kSym].right = rs.dynamic->free-- ;
 	  for (int d = newDepth ; d-- ;)
@@ -1026,7 +1072,8 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	    }
 	  else
 	    { int newDepth = randomDepth() ;
-	      if (newDepth > dynamicSpace (rs)) return rebuildAddDynamic (rsp, k, kSym) ;
+	      if (newDepth > dynamicSpace (rs))
+		{ doubleDynamic (rsp) ; return addDirect (rsp, k, kSym) ; }
 	      addColumn (rs, node[iLeft].sym, newDepth, k,
 			 iLeft, iRight, k - sum + node[iLeft].count, sum - k,
 			 iLeft, node[iLeft].sRight, k - sum + node[iLeft].count,
@@ -1047,7 +1094,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	  else // insert new column between iLeft and iRight
 	    { int newDepth = randomDepth() ;
 	      if (newDepth + (kSym == nSym) > dynamicSpace (rs))
-		return rebuildAddDynamic (rsp, k, kSym) ;
+		{ doubleDynamic (rsp) ; return addDirect (rsp, k, kSym) ; }
 	      // before we add the column we must find isLeft and isRight
 	      if (kSym == rs.dynamic->nSym || !rs.dynamic[1+kSym].sum)
 		isLeft = isRight = 0 ;
@@ -1120,7 +1167,158 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
   else return rsError (RS_ERROR_LOCKED, "rsAdd", "") ;
 }
 
-/****************** public interface length, count, rank, find, add *********************/
+/****************** directory actions for syng ******************************/
+
+bool  rsDirSyng (Rskip rs, int iSym, I64 *sym, I64 *offset, I64 *count)
+{
+  if (!rs.linear || iSym < 0 || iSym >= rsNsym(rs)) return false ;
+  if (rs.linear->max)
+    { if (rsType(rs) != LINEAR_SYNG) return false ;
+      LinearSyngDir *lsd = linearSyngDir(rs) + iSym ;
+      if (sym) *sym = lsd->sym ;
+      if (offset) *offset = lsd->offset ;
+      if (count) *count = lsd->count ;
+    }
+  else if (rs.dynamic->max)
+    { Dynamic *node = rs.dynamic + 1 + iSym ;
+      if (sym) *sym = node->sym ;
+      if (offset) *offset = node->offset ;
+      if (count) *count = node->count ;
+    }
+  else
+    { Fixed *node = rs.fixed + 1 + iSym ;
+      if (sym) *sym = node->sym ;
+      if (offset) *offset = node->offset ;
+      if (count) *count = node->count ;
+    }
+  return true ;
+}
+
+int rsDirRankSyng (Rskip rs, I32 symbol, U32 offset)
+{
+  int i, sum = 0, nSym = rsNsym(rs) ;
+  if (rs.linear->max)
+    { if (rsType(rs) != LINEAR_SYNG) die ("non-syng type %d in rsDirRankSyng", rsType(rs)) ;
+      LinearSyngDir *lsd = linearSyngDir(rs) ;
+      for (i = 0 ; i < nSym ; ++i)
+	if (lsd[i].sym == symbol && lsd[i].offset == offset) // found it
+	  return sum ;
+	else
+	  sum += lsd[i].count ;
+      die ("failed to fine symbol %d offset %u in linear rskip", symbol, offset) ;
+    }
+  else if (rs.dynamic->max) // dynamic
+    { Dynamic *node = rs.dynamic + 1 ;
+      for (i = 0 ; i < nSym ; ++i)
+	if (node[i].sym == symbol && node[i].offset == offset) // found it
+	  return sum ;
+	else
+	  sum += node[i].count ;
+      die ("failed to fine symbol %d offset %u in linear rskip", symbol, offset) ;
+    }
+  else 
+    die ("non-syng type %d in rsDirRankSyng", rsType(rs)) ;
+
+  return -1 ;
+}
+
+int rsDirAddSyng (Rskip *rsp, I32 symbol, U32 offset)  // increment count
+{
+  Rskip rs = *rsp ;
+  int i, sum = 0, nSym = rsNsym(rs) ;
+  if (rs.linear->max)
+    { if (rsType(rs) != LINEAR_SYNG) die ("non-syng type %d in rsDirAddSyng", rsType(rs)) ;
+      LinearSyngDir *lsd = linearSyngDir(rs) ;
+      for (i = 0 ; i < nSym ; ++i)
+	if (lsd[i].sym == symbol && lsd[i].offset == offset) // found it
+	  { if (lsd[i].count == MAX_BIG) // convert to dynamic and recurse
+	      { int size = rs.linear->max - rs.linear[1].free ;
+		I64 nRun, *iSym = new(size, I64), *runLen = new(size, I64) ;
+		rsLinearise (rs, &nRun, iSym, runLen) ;
+		*rsp = buildDynamic (DYNAMIC, nSym, nRun, iSym, runLen) ; // forces DYNAMIC
+		Dynamic *node = rsp->dynamic + 1 ;
+		for (i = 0 ; i < nSym ; ++i)
+		  { node[i].sym = lsd[i].sym ; node[i].offset = lsd[i].offset ;
+		    node[i].count = lsd[i].count ;
+		  }
+		rsDestroy (rs) ;
+		newFree (iSym, size, I64) ; newFree (runLen, size, I64) ;
+		return rsDirAddSyng (rsp, symbol, offset) ;
+	      }
+	    ++lsd[i].count ;
+	    return sum ;
+	  }
+	else
+	  sum += lsd[i].count ;
+      
+      // only get here if we didn't find it - need to increment nSym and create it
+      if (linearSpace(rs)*sizeof(Linear) >= sizeof(LinearSyngDir)) // just add
+	{ lsd[nSym].sym = symbol ; lsd[nSym].offset = offset ; lsd[nSym].count = 1 ;
+	  ++rs.linear->nSym ;
+	}
+      else if (doubleLinear (rsp)) // was able to double and stay linear - add to new directory
+	{ lsd = linearSyngDir(*rsp) ;
+	  lsd[nSym].sym = symbol ; lsd[nSym].offset = offset ; lsd[nSym].count = 1 ;
+	  ++(*rsp).linear->nSym ;
+	}
+      else // must convert to dynamic
+	{ int size = rs.linear->max - rs.linear[1].free ;
+	  I64 nRun, *iSym = new(size, I64), *runLen = new(size, I64) ;
+	  rsLinearise (rs, &nRun, iSym, runLen) ;
+	  I32 *aSym = new(nSym+1, I32) ; U32 *aOff = new(nSym+1, U32), *aCnt = new(nSym+1, U32) ;
+	  for (i = 0 ; i < nSym ; ++i)
+	    { aSym[i] = lsd[i].sym ; aOff[i] = lsd[i].offset ; aCnt[i] = lsd[i].count ; }
+	  aSym[nSym] = symbol ; aOff[nSym] = offset ; aCnt[nSym] = 1 ;
+	  rsDestroy (rs) ;
+	  rs = *rsp = rsBuildDynamicSyng (nSym+1, aSym, aOff, nRun, iSym, runLen) ;
+	  for (i = 0 ; i <= nSym ; ++i) rs.dynamic[1+i].count = aCnt[i] ;
+	  newFree (iSym, size, I64) ; newFree (runLen, size, I64) ;
+	  newFree (aSym, nSym+1, I32) ; newFree (aOff, nSym+1, U32) ; newFree (aCnt, nSym+1, U32) ;
+	}
+    }
+  else if (rs.dynamic->max) // dynamic
+    { Dynamic *node = rs.dynamic + 1 ;
+      for (i = 0 ; i < nSym ; ++i)
+	if (node[i].sym == symbol && node[i].offset == offset) // found it
+	  { ++node[i].count ; return sum ; }
+	else
+	  sum += node[i].count ;
+
+      // again, only get here if we didn't find it - much simpler in this case
+      if (dynamicSpace (rs) == 0) rs = doubleDynamic (rsp) ;
+      node = rs.dynamic + 1 ;
+      node[nSym].sym = symbol ; node[nSym].offset = offset ; node[nSym].count = 1 ;
+      ++rs.dynamic->nSym ;
+    }
+  else 
+    die ("non-syng type %d in rsDirAddSyng", rsType(rs)) ;
+
+  return sum ;
+}
+
+U32 rsDirSum (Rskip rs)
+{
+  U32 sum = 0 ;
+  if (rsType(rs) == LINEAR_SYNG)
+    { LinearSyngDir *lsd = linearSyngDir(rs) ;
+      for (int i = 0 ; i < rs.linear->nSym ; ++i) sum += lsd[i].count ;
+    }
+  else if (rsType(rs) == DYNAMIC)
+    { Dynamic *node = rs.dynamic + 1 ;
+      for (int i = 0 ; i < rs.dynamic->nSym ; ++i) sum += node[i].count ;
+    }
+  else die ("unsupported type %d in rsDirSetCount0", rsType(rs)) ;
+  return sum ;
+}
+
+void rsDirSetCount (Rskip rs, U32 iSym, U32 count)
+{
+  if (rsType(rs) == LINEAR_SYNG)  linearSyngDir(rs)[iSym].count = count ;
+  else if (rsType(rs) == DYNAMIC) rs.dynamic[1+iSym].count = count ;
+  else die ("unsupported type %d in rsDirSetCount0", rsType(rs)) ;
+}
+
+/****************** public interface size, length, count, rank, find, add *********************/
 
 // first a couple of routines to look up the symbol, and in the case of syng also the offset
 
@@ -1245,14 +1443,16 @@ static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not in
 	  if (count == 255) { count = (--node)->bigCount ; --i ; }
 	  sum += count ;
 	  if (sym == kSym) sSum += count ;
-	  if (sum >= k) return (sym == kSym) ? sSum - (sum - k) : sSum ;
+	  if (sum > k) return (sym == kSym) ? sSum - (sum - k) : sSum ;
 	}
+      if (sum == k) return sSum ; // for k == length condition, which is legal
     }
   else if (rs.dynamic->max) // dynamic - must work in the main list
     { if (!k) return 0 ; // by definition - protects against case noted below
       Dynamic *node = rs.dynamic ;
       U32 i = rs.dynamic->start, sum = node[i].before ;
       if (sum >= k) // go left
+      // 260308 - maybe I could change >= to > in the line above and 2 lines down, and be cleaner?
 	{ while (true) // LOGARITHMIC in r
 	    if (sum - node[i].before >= k) { sum -= node[i].before ; i = node[i].left ; }
 	    else if (node[i].down) i = node[i].down ;
@@ -1328,7 +1528,7 @@ static int find (Rskip rs, U32 k, int *kSym) // quite like rank()
 	  if (count == 255) { count = (--node)->bigCount ; --i ; }
           sum += count ;
 	  sSums[sym] += count ;
-	  if (sum >= k)
+	  if (sum > k)
 	    { if (kSym) *kSym = sym ;
 	      return sSums[sym] - (sum - k) ;
 	    }
@@ -1337,18 +1537,18 @@ static int find (Rskip rs, U32 k, int *kSym) // quite like rank()
   else if (rs.dynamic->max) // dynamic
     { Dynamic *node = rs.dynamic ;
       U32 i = rs.dynamic->start, sum = node[i].before ;
-      if (sum >= k) // go left
+      if (sum > k) // go left
 	{ while (true) // LOGARITHMIC in r
-	    if (sum - node[i].before >= k) { sum -= node[i].before ; i = node[i].left ; }
+	    if (sum - node[i].before > k) { sum -= node[i].before ; i = node[i].left ; }
 	    else if (node[i].down) i = node[i].down ;
 	    else break ;
 	  sum -= node[i].before ; i = node[i].left ; // NB i can't be 0
 	}
       else // go right
 	while (true) // LOGARITHMIC in r
-	  if (sum + node[i].count < k)
+	  if (sum + node[i].count <= k)
 	    { sum = sum + node[i].count ; i = node[i].right ;
-	      if (i == 0) die ("input k = %u > max in rsFind() dynamic", k) ;
+	      if (!i) die ("input k = %u > max in rsFind() dynamic", k) ;
 	    }
 	  else if (node[i].down) i = node[i].down ;
 	  else break ; // at bottom in correct node
@@ -1364,12 +1564,11 @@ static int find (Rskip rs, U32 k, int *kSym) // quite like rank()
     { Fixed *node = rs.fixed ;
       U32 i = rs.fixed->start ;
       while (true) // LOGARITHMIC
-	if (node[i].sum < k)
+	if (node[i].sum <= k)
           { i = node[i].right ;
 	    if (!i) die ("input k = %u > max in rsFind() fixed, i %u", k, i) ;
           }
-	else if (!(node[i].sSum & FLAG32))
-	  i = node[i].down ;
+	else if (!(node[i].sSum & FLAG32)) i = node[i].down ;
 	else break ; // at bottom in correct node
       if (kSym) *kSym = node[i].iSym ;
       return (node[i].sSum & MASK32) - (node[i].sum - k) ;
@@ -1424,10 +1623,61 @@ int rsAddSyng (Rskip *rsp, U32 k, I32 symbol, U32 offset)
   // else this was a new symbol - must add it to the directory
   addDirect (rsp, k, kSym) ;
   if (rsType(*rsp) == LINEAR_SYNG)
-    { LinearSyngDir *lsd = linearSyngDir(*rsp) ; lsd[kSym].sym = symbol ; lsd[kSym].offset = offset ; }
+    { LinearSyngDir *lsd = linearSyngDir(*rsp) ;
+      lsd[kSym].sym = symbol ; lsd[kSym].offset = offset ; lsd[kSym].count = 0 ;
+    }
   else if (rsType(*rsp) == DYNAMIC)
-    { rsp->dynamic[1+kSym].sym = symbol ; rsp->dynamic[1+kSym].offset = offset ; }
+    { Dynamic *node = rsp->dynamic + 1 ;
+      node[kSym].sym = symbol ; node[kSym].offset = offset ; node[kSym].count = 0 ;
+    }
   return 0 ; // there can not have been anything before, so rank was 0
+}
+
+/************ linearisation - reversal of rsBuild*Syng()  ****************/
+
+bool rsLinearise  (Rskip rs, I64 *nRun, I64 *iSym, I64 *runLen)
+{
+  if (!rs.linear) return false ;
+  I64 n = 0 ;
+  if (rs.linear->max)
+    { Linear *node = rs.linear + rs.linear->max - 1 ;
+      for (int i = rs.linear->max ; --i > rs.linear[1].free ; --node)
+	{ if (iSym) *iSym++ = node->iSym ;
+	  if (node->count < 255) { if (runLen) *runLen++ = node->count ; }
+	  else { --node ; --i ; if (runLen) *runLen++ = node->bigCount ; }
+	  ++n ;
+	}
+    }
+  else if (rs.dynamic->max)
+    { Dynamic *node = rs.dynamic ;
+      
+      // first find the leftmost node
+      int i = rs.dynamic->start ;
+      while (true)
+	if (node[i].left) i = node[i].left ;
+	else if (node[i].down) i = node[i].down ;
+	else break ;
+      // then fill
+      for ( ; i ; i = node[i].right)
+	{ if (iSym) *iSym++ = node[i].iSym ;
+	  if (runLen) *runLen++ = node[i].count ;
+	  ++n ;
+	}
+    }
+  else
+    { Fixed *node = rs.fixed ;
+      
+      // first find go to bottom of the start column
+      int i = rs.dynamic->start ; while (node[i].down) i = node[i].down ;
+      // then fill
+      for ( ; i ; i = node[i].right)
+	{ if (iSym) *iSym++ = node[i].iSym ;
+	  if (runLen) *runLen++ = node[i].count ;
+	  ++n ;
+	}
+    }
+  if (nRun) *nRun = n ;
+  return true ;
 }
 
 /***************************** test package ***************************/
@@ -1624,22 +1874,23 @@ int main (int argc, char *argv[])
 	if (isFind)
 	  { I32 expectedSym = 0 ;
 	    int expectedRank = 0, sum = 0 ;
+	    int target = len/2 ;
 	    for (i = 0 ; i < nRuns ; ++i)
 	      { sum += C[i] ;
-		if (sum >= len/2)
+		if (sum > target)
 		  { expectedSym = B[i] ;
 		    for (int j = 0 ; j <= i ; ++j)
 		      if (B[j] == expectedSym) expectedRank += C[j] ;
-		    expectedRank -= (sum - len/2) ;
+		    expectedRank -= (sum - target) ;
 		    break ;
 		  }
 	      }
 	    I32 actualSym ; U32 actualOffset ;
-	    int actualRank = rsFindSyng (rs, len/2, &actualSym, &actualOffset) ;
+	    int actualRank = rsFindSyng (rs, target, &actualSym, &actualOffset) ;
 	    if (actualSym != expectedSym || actualRank != expectedRank)
 	      { rsPrint (rs) ;
 		die ("V %d callCount %d rsFind(%d) mismatch: expected sym=%d rank=%d, got sym=%d rank=%d",
-		     nVertex, callCount, len/2, expectedSym,  expectedRank, actualSym, actualRank) ;
+		     nVertex, callCount, target, expectedSym,  expectedRank, actualSym, actualRank) ;
 	      }
 	    totFind += actualRank ;
 	  }

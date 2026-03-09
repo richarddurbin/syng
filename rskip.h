@@ -5,7 +5,7 @@
  * Description: interface for run-length skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Feb 27 23:37 2026 (rd109)
+ * Last edited: Mar  8 10:46 2026 (rd109)
  * Created: Sun Nov 30 21:20:56 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -26,7 +26,7 @@ Rskip rsCreateRaw (void) ;     // will create an empty raw rSkip
 Rskip rsCreate    (int nSym, I32 *symbol) ; // optional preload nSym symbols, none if nSym == 0
 int   rsDestroy   (Rskip rs) ; // destroy any Rskip, cleaning up memory
 
-int   rsAdd    (Rskip *rs, U32 k, I32 symbol) ; // add symbol at k and return rank (see below)
+int   rsAdd    (Rskip *rsp, U32 k, I32 symbol) ; // add symbol at k and return rank (see below)
 // if rs was created with rsCreateRaw() then symbol must be in 0..nsym
 // else symbol can be anything - linear search on symbol, adding at end if necessary
 int   rsLength (Rskip rs) ;                     // total length = sum of runlengths
@@ -34,17 +34,29 @@ int   rsCount  (Rskip rs, I32 symbol) ;         // how many of symbol
 int   rsRank   (Rskip rs, U32 k, I32 symbol) ;  // how many symbol up to (not including) k
 int   rsFind   (Rskip rs, U32 k, I32 *symbol) ; // gives symbol at k and returns rank of it
 int   rsNsym   (Rskip rs) ; // number of symbols currently used - constant time
+int   rsSize   (Rskip rs, int *linearSize, int *skipSize) ;
+// returns number of nodes (upper bound for nRun), and fills one of *linearSize, *skipSize in bytes
+void  rsPrint  (Rskip rs) ; // for debugging
 
-// same for use with syng
+// similar for use with syng
 Rskip rsCreateSyng (int nSym, I32 *symbol, U32 *offset) ; // no preloading if nSym == 0
 Rskip rsBuildFixedSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSym, I64 *runLen) ;
 Rskip rsBuildDynamicSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSym, I64 *runLen) ;
 // use I64 for iSym and runLen here so can natively pass to/from ONEcode arrays
-int   rsAddSyng    (Rskip *rs, U32 k, I32 symbol, U32 offset) ;
+int   rsAddSyng    (Rskip *rsp, U32 k, I32 symbol, U32 offset) ;
 int   rsCountSyng  (Rskip rs, I32 symbol, U32 offset) ;
 int   rsRankSyng   (Rskip rs, U32 k, I32 symbol, U32 offset) ;
 int   rsFindSyng   (Rskip rs, U32 k, I32 *symbol, U32 *offset) ;
 // rsLength() and rsNsym() work fine on Syng Rskips
+
+// next group support directory management and use by syng
+int   rsDirAddSyng  (Rskip *rsp, I32 symbol, U32 offset) ; // increment count
+int   rsDirRankSyng (Rskip rs, I32 symbol, U32 offset) ;
+// including serialisation for writing
+bool  rsDirSyng     (Rskip rs, int iSym, I64 *sym, I64 *offset, I64 *count) ;
+void  rsDirSetCount (Rskip rs, U32 iSym, U32 count) ;
+U32   rsDirSum      (Rskip rs) ;
+bool  rsLinearise   (Rskip rs, I64 *nRun, I64 *iSym, I64 *runLen) ;
 
 // error codes - all must be negative
 #define RS_ERROR_EMPTY 		-1
