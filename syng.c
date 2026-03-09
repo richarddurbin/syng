@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 11 22:59 2025 (rd109)
+ * Last edited: Mar  8 21:21 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -17,6 +17,9 @@
 #include "syng.h"
 
 static OneSchema *schema ;
+
+// #define PATH_CHECK
+extern int pathCount ;
 
 /************************* thread functions ****************************/
 
@@ -41,7 +44,7 @@ typedef struct {
 
 typedef struct {
   I32	    sync ;	// initially 0 if not in kh; -ve if if reverse orientation
-  I32       pos ;       // offset in the current sequence
+  U32       pos ;       // offset in the current sequence
 } SyncPos ;
 
 typedef enum { NONE=0, SEQ, PATH, GBWT } OutType ;
@@ -280,7 +283,6 @@ static char usage[] =
   "  -writeGBWT             : write a .1gbwt file (nodes, edges and paths in GBWT form)\n"
   "  -writeSeq              : write a .1seq file (paths converted back to sequences)\n"
   "  -outputEnds            : write the non-syncmer ends of path sequences as X,Y lines\n"
-  "  -FM                    : convert input GBWT to FM before processing\n"
   //  "  -outputNames           : write the names of path sequences as I lines\n"
   "possible inputs are:\n"
   "  <sequence file>        : any of fasta[.gz], fastq[.gz], BAM/CRAM/SAM, .1seq\n"
@@ -302,7 +304,7 @@ int main (int argc, char *argv[])
   OneFile    *ofK = 0, *ofNewK = 0, *ofOut = 0 ;
   SyngBWT    *gbwtOut = 0 ;
   SyncmerParams params = syncmerParamsDefault () ;
-  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = false, isFM = false ;
+  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = false ;
   bool        isSort = false ;
   I64         i, j, k ; // general purpose indices
   
@@ -394,7 +396,6 @@ int main (int argc, char *argv[])
 	argc -= 2 ; argv += 2 ;
       }
     else if (!strcmp (*argv, "-outputEnds")) { isOutputEnds = true ; --argc ; ++argv ; }
-    else if (!strcmp (*argv, "-FM")) { isFM = true ; --argc ; ++argv ; }
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   fprintf (stdout, "k, w, seed are %d %d %d\n", params.k, params.w, params.seed) ;
@@ -447,9 +448,7 @@ int main (int argc, char *argv[])
 	  oneReadLine (ofIn) ; if (ofIn->lineType == 'h') syncmerParamsCheck (ofIn, params) ;
 	  I64 z ;
 	  if (oneStats (ofIn, 'Z', &z, 0, 0) && z) // must have a GBWT
-	    { threadInfo->sbwt = syngBWTread (ofIn) ;
-	      if (isFM) syngBWTtoFM (threadInfo->sbwt) ;
-	    }
+	    threadInfo->sbwt = syngBWTread (ofIn) ;
 	  for (i = 0 ; i < nThread ; ++i)
 	    { threadInfo[i].ofIn = ofIn+i ;
 	      oneGoto (ofIn+i, 'P', 1 + (nPath * i) / nThread) ;
@@ -532,6 +531,8 @@ int main (int argc, char *argv[])
 	      SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
 	      for (j = 0 ; j < arrayMax (ti->seqInfo) ; ++j, ++nSeq)
 		{ totSync += arrp(ti->seqInfo, j, SeqInfo)->nSync ;
+		  ++pathCount ; // global path counter
+		  printf ("path %d\n", pathCount) ;
 		  if (outType == SEQ)
 		    oneWriteLine (ofOut, 'S', arrp(ti->seqInfo, j, SeqInfo)->len, seq) ;
 		  else if (outType == PATH || outType == GBWT)
@@ -544,14 +545,32 @@ int main (int argc, char *argv[])
 		      oneWriteLine (ofOut, 'P', 0, 0) ;
 		      if (nSync && outType == GBWT) // add paths to the GBWT and write the start nodes
 			{ SyngBWTpath *sbp = syngBWTpathStartNew (gbwtOut, sp->sync) ;
+			  U32 j0 = sbp->jLast ; // used in PATH_CHECK
 			  oneInt(ofOut, 0) = sp->sync ;
 			  oneInt(ofOut, 1) = sp->pos ;
-			  oneInt(ofOut, 2) = sbp->jLast ;
+			  oneInt(ofOut, 2) = j0 ;
 			  oneInt(ofOut, 3) = nSync ;
 			  oneWriteLine (ofOut, 'Z', 0, 0) ;
 			  for (k = 1 ; k < nSync ; ++k)
 			    syngBWTpathAdd (sbp, sp[k].sync, sp[k].pos - sp[k-1].pos) ;
 			  syngBWTpathFinish (sbp) ;
+#ifdef PATH_CHECK			  
+			  sbp = syngBWTpathStartOld (gbwtOut, sp->sync, j0) ;
+			  I32 sync ;
+			  U32 pos ;
+			  for (k = 1 ; k < nSync ; ++k)
+			    if (syngBWTpathNext (sbp, &sync, &pos))
+			      { if (sync != sp[k].sync)
+				  die ("path %d sync %d mismatch %d != %d",
+				       pathCount, k, sync, sp[k].sync) ;
+				if (pos != sp[k].pos - sp[k-1].pos)
+				  die ("path %d offset %d mismatch %d != %d - %d sync %d nSync %d",
+				       pathCount, k, pos, sp[k].pos, sp[k-1].pos, sync, nSync) ;
+			      }
+			    else
+			      die ("failed pathNext: path %d k %d", pathCount, k) ;
+			  syngBWTpathDestroy (sbp) ;
+#endif
 			  // now add the reverse path
 			  sbp = syngBWTpathStartNew (gbwtOut, -sp[nSync-1].sync) ;
 			  for (k = nSync-2 ; k >= 0 ; --k)
