@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Apr  4 18:21 2025 (rd109)
+ * Last edited: Mar  4 02:31 2026 (rd109)
  * Created: Mon May 29 08:19:18 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -20,7 +20,6 @@
 
 typedef struct {
   int   fixedLen ;
-  bool  isFM ;
   Array node ;   // of Node - only defined in syngbwt.c
   Array status ; // of U8 bitFlags
   Array length ; // of I32, if fixedLen == 0
@@ -31,7 +30,8 @@ typedef struct {
 
 typedef struct {
   SyngBWT *sb ;
-  I32      lastNode, lastOff, thisNode, jLast, jMax ;
+  I32      lastNode, thisNode ;
+  U32      lastOff, jLast, jMax ;
 } SyngBWTpath ;
 
 // in syngbwt.c
@@ -41,13 +41,12 @@ void           syngBWTdestroy (SyngBWT *sb) ;
 void           syngBWTwrite (OneFile *of, SyngBWT *sb) ;
 SyngBWT       *syngBWTread  (OneFile *of) ;
 SyngBWTpath   *syngBWTpathStartNew (SyngBWT *sb, I32 startNode) ;
-void           syngBWTpathAdd (SyngBWTpath *sbp, I32 nextNode, I32 offset) ; // add to a new path
+void           syngBWTpathAdd (SyngBWTpath *sbp, I32 nextNode, U32 offset) ; // add to a new path
 void           syngBWTpathFinish (SyngBWTpath *sbp) ; // use when creating a new path
-SyngBWTpath   *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, I32 count) ; // follow an existing path
-bool           syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, I32 *nextPos) ;
+SyngBWTpath   *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, U32 count) ; // follow an existing path
+bool           syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, U32 *nextPos) ;
 void           syngBWTpathDestroy (SyngBWTpath *sbp) ;
 void           syngBWTstat (SyngBWT *sb) ;
-void           syngBWTtoFM (SyngBWT *sb) ; // convert BWT information to FM mode
 
 static char *syngSchemaText =
   "1 3 def 1 0               schema for syng\n"
