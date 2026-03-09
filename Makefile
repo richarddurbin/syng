@@ -1,9 +1,9 @@
 # makefile for gaffer developed on Richard's Mac
 
-CFLAGS = -O3
-#CFLAGS = -g	# for debugging
+#CFLAGS = -O3
+CFLAGS = -g	# for debugging
 
-ALL = syng ONEview syngmap syngstat k31type
+ALL = syng syngpath2gbwt ONEview syngmap syngstat k31type
 
 DESTDIR = ~/bin
 
@@ -41,7 +41,10 @@ seqhash.o: seqhash.c seqhash.h $(UTILS_HEADERS)
 kmerhash.o: kmerhash.c kmerhash.h $(UTILS_HEADERS)
 	$(CC) $(CFLAGS) -DONEIO -c $^
 
-syngbwt.o: syngbwt.c syng.h $(UTILS_HEADERS) ONElib.h
+rskip.o: rskip.c $(UTILS_HEADERS)
+	$(CC) $(CFLAGS) -c $^
+
+syngbwt3.o: syngbwt3.c syng.h $(UTILS_HEADERS) ONElib.h
 	$(CC) $(CFLAGS) -c $^
 
 syncmerset.o: syncmerset.c syncmerset.h $(UTILS_HEADERS) ONElib.h
@@ -52,19 +55,22 @@ ONElib.o: ONElib.c ONElib.h
 
 ### programs
 
-syng: syng.c syngbwt.o syncmerset.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syng: syng.c syngbwt3.o rskip.o syncmerset.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
-syngmap: syngmap.c syngbwt.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syngpath2gbwt: syngpath2gbwt.c syngbwt3.o rskip.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
-syngstat: syngstat.c syngbwt.o ONElib.o $(UTILS_OBJS)
+syngmap: syngmap.c syngbwt3.o rskip.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
+
+syngstat: syngstat.c syngbwt3.o rskip.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lz -lpthread
 
 syngprune: syngprune.c seqio.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS)
 
-syngbwt: syngbwt.c syng.h seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syngbwt3: syngbwt3.c rskip.o syng.h seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(SEQIO_LIBS) syngbwt.o
 
 k31type: k31type.c seqio.o ONElib.o $(UTILS_OBJS)
