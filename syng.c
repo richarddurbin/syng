@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  8 21:21 2026 (rd109)
+ * Last edited: Mar 11 23:03 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -532,7 +532,7 @@ int main (int argc, char *argv[])
 	      for (j = 0 ; j < arrayMax (ti->seqInfo) ; ++j, ++nSeq)
 		{ totSync += arrp(ti->seqInfo, j, SeqInfo)->nSync ;
 		  ++pathCount ; // global path counter
-		  printf ("path %d\n", pathCount) ;
+		  // printf ("path %d\n", pathCount) ;
 		  if (outType == SEQ)
 		    oneWriteLine (ofOut, 'S', arrp(ti->seqInfo, j, SeqInfo)->len, seq) ;
 		  else if (outType == PATH || outType == GBWT)
