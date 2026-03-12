@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  9 10:17 2026 (rd109)
+ * Last edited: Mar 12 09:01 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -292,11 +292,11 @@ void rsPrint (Rskip rs)
       Dynamic *node = rs.dynamic ;
       printf ("Dynamic max %u nSym %u start %u maxDepth %u free %u\n",
 	      node->max, node->nSym, node->start, node->maxDepth, node->free) ;
-      if (rs.dynamic->nSym < 30)
+      if (rs.dynamic->nSym < 3000) // 30
 	for (i = 1 ; i <= rs.dynamic->nSym ; ++i)
 	  printf ("    DIR %3d: sym %8d offset %3u count %4u right %3u depth %2u sum %d\n", i,
 		  node[i].sym, node[i].offset, node[i].count, node[i].right, node[i].down, node[i].sum) ;
-      if (rs.dynamic->max < 500)
+      if (rs.dynamic->max < 50000) // 500
 	for (i = rs.dynamic->free + 1 ; i < rs.dynamic->max ; ++i)
 	  printDynamic (&node[i], i) ;
     }
@@ -867,7 +867,7 @@ static Rskip doubleDynamic (Rskip *rsp) // extends space
       if (node->up) node->up += offset ;
       if (node->down) node->down += offset ;
     }
-  rs2.dynamic->start += offset ; // also need this
+  if (rs2.dynamic->start) rs2.dynamic->start += offset ; // also need this
 
   rsDestroy (rs) ;
   *rsp = rs2 ;
@@ -1001,7 +1001,9 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
   else if (!rs.linear->max && rs.dynamic->max)
     { Dynamic *node = rs.dynamic ;
       if (callCount == DEBUG)
-	printf ("addDirect dynamic callCount %d k %u kSym %u\n", callCount, k, kSym) ;
+	{ printf ("addDirect dynamic callCount %d k %u kSym %u\n", callCount, k, kSym) ;
+	  rsPrint (rs) ;
+	}
 
 #define I_NEED_THIS // though I think I should be able to remove it given changes elsewhere...
 #ifdef I_NEED_THIS
