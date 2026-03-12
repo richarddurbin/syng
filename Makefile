@@ -1,7 +1,7 @@
 # makefile for gaffer developed on Richard's Mac
 
-#CFLAGS = -O3
-CFLAGS = -g	# for debugging
+CFLAGS = -O3
+#CFLAGS = -g	# for debugging
 
 ALL = syng syngpath2gbwt ONEview syngmap syngstat k31type
 
