@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  9 10:36 2026 (rd109)
+ * Last edited: Mar 12 09:01 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -151,6 +151,7 @@ int main (int argc, char *argv[])
 	  for (k = nSync-2 ; k >= 0 ; --k)
 	    syngBWTpathAdd (sbp, -sp[k].sync, sp[k+1].pos - sp[k].pos) ;
 	  syngBWTpathFinish (sbp) ;
+	  // printf (" path %d processed\n", pathCount) ;
 	}
     } // end of file loop
   oneFileClose (ofIn) ;
