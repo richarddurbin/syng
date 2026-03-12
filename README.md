@@ -7,7 +7,9 @@ syng makes extensive use of the ONEcode package <https://github.com/thegenemyers
 
 Sets of syncmers, for example those needed to represent a set of sequences, are normally stored in a **.1khash** file, although it is possible to export them also in gzipped fasta file.  As well as explicitly exporting paths as strings of kmer indices in a **.1path** file, syng can also build a [GBWT](https://academic.oup.com/bioinformatics/article/36/2/400/5538990) that implicitly represents the paths, stored in a **.1gbwt** file.  We plan for syng to also export, and potentially import [GFA](https://gfa-spec.github.io/GFA-spec/GFA1.html) files.
 
-To give some idea of performance, syng converted a 20x PacBio HiFi read data set of a 935Mb cichlid genome (~19Gbp) into a 1.05GB .1khash file and a 493Mb .1gbwt file of (1023,32)-syncmers in 62 seconds on a MacBook Pro, and 92 human genomes (277Gbp) from release 1 of [HPRC](https://humanpangenome.org/) (leaving out HG002 for evaluation) into a 4.4GB .1khash file and a 5.3GB .1gbwt file of (63,8)-syncmers in about 4 hours on a Linux HPC cluster. 
+Update March 2026: I reimplemented the GBWT code using doubly-linked run-length-compressed skip lists (in **rskip.[ch]**), making core GBWT operations O(logN) and speeding them up significantly. Generation of the **.1gbwt** file is now best done by first making a **.1path** file then converting that with **syngpath2gbwt**.
+
+To give some idea of performance, syng converted a 20x PacBio HiFi read data set of a 935Mb cichlid genome (~19Gbp) into a 1.05GB .1khash file and a 493Mb .1gbwt file of (1023,32)-syncmers in 62 seconds on a MacBook Pro, and 92 human genomes (277Gbp) from release 1 of [HPRC](https://humanpangenome.org/) (leaving out HG002 for evaluation) into a 4GB .1khash file and a 5.8GB .1gbwt file of (63,8)-syncmers in about 1.5 hours on a Linux HPC cluster. 
 
 The .1khash, .1path and .1gbwt files are all examples of **ONEcode**
 files.  The project also contains **ONEview** from the
