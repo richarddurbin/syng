@@ -5,7 +5,7 @@
  * Description: interface for run-length skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  8 10:46 2026 (rd109)
+ * Last edited: Mar 13 22:27 2026 (rd109)
  * Created: Sun Nov 30 21:20:56 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -37,6 +37,7 @@ int   rsNsym   (Rskip rs) ; // number of symbols currently used - constant time
 int   rsSize   (Rskip rs, int *linearSize, int *skipSize) ;
 // returns number of nodes (upper bound for nRun), and fills one of *linearSize, *skipSize in bytes
 void  rsPrint  (Rskip rs) ; // for debugging
+bool  rsCheck  (Rskip rs) ; // for debugging
 
 // similar for use with syng
 Rskip rsCreateSyng (int nSym, I32 *symbol, U32 *offset) ; // no preloading if nSym == 0
@@ -51,7 +52,7 @@ int   rsFindSyng   (Rskip rs, U32 k, I32 *symbol, U32 *offset) ;
 
 // next group support directory management and use by syng
 int   rsDirAddSyng  (Rskip *rsp, I32 symbol, U32 offset) ; // increment count
-int   rsDirRankSyng (Rskip rs, I32 symbol, U32 offset) ;
+int   rsDirRankSyng (Rskip rs, I32 symbol, U32 offset) ; // dies if not found
 // including serialisation for writing
 bool  rsDirSyng     (Rskip rs, int iSym, I64 *sym, I64 *offset, I64 *count) ;
 void  rsDirSetCount (Rskip rs, U32 iSym, U32 count) ;
