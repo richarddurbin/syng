@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  9 10:45 2026 (rd109)
+ * Last edited: Mar 14 00:05 2026 (rd109)
  * * Nov 23 01:15 2025 (rd109): converted to skipList (balanced tree)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
@@ -92,6 +92,8 @@ static inline bool nodeCheck (Node *n, U8 s)
   bool isSimpleIn = (s & NODE_SIMPLE_IN), isSimpleOut = (s & NODE_SIMPLE_OUT) ;
   bool isBad = false ;
 
+  if (!s) return true ;
+
   if (isSimpleIn && !isSimpleOut && n->in.count != rsLength(n->out.rs))
     { isBad = true ;
       warn ("nodeCheck simple in.count %u != length out.rs %d", n->in.count, rsLength(n->out.rs)) ;
@@ -110,6 +112,8 @@ static inline bool nodeCheck (Node *n, U8 s)
 	  warn ("nodeCheck dirSum out %u != length in %d", rsDirSum(n->out.rs), rsLength(n->in.rs)) ;
 	}
     }
+  if (!isSimpleIn && !rsCheck (n->in.rs)) isBad = true ;
+  if (!isSimpleOut && !rsCheck (n->out.rs)) isBad = true ;
   return isBad ;
 }
 
@@ -328,7 +332,69 @@ static U32 syngBWTnext (SyngBWT *sb, I32 k, I32 in, U32 inOff, U32 j, I32 *out, 
 	}
     }
 }
+
+static inline bool syngBWTmatch (SyngBWT *sb, I32 k, I32 out, U32 off, U32 *low, U32 *high)
+{
+  bool isPositive = (k >= 0) ;
+  I32  kPos = isPositive ? k : -k ;
+  if (kPos >= arrayMax(sb->node))
+    die ("syngBWTnext: k %d >= arrayMax(sb->node) %lld", k, arrayMax(sb->node)) ;
+  Node n = arr(sb->node,   kPos, Node) ;
+  U8   s = arr(sb->status, kPos, U8) ;
+  if (!s) { printf ("MATCH at %d node empty!\n", k) ; return false ; }
+
+  if (pathCount == PATH_DEBUG)
+    { printf ("++match %d k %d out %d low %u high %u\n", PATH_DEBUG, k, out, *low, *high) ;
+      nodePrint (&n, s) ;
+    }
   
+  if (isPositive)
+    { if (s & NODE_SIMPLE_OUT)
+	if (out == n.out.sync && off == n.out.offset)
+	  { if (*high > n.out.count) die ("syngBWTmatch error") ; }
+	else return false ;
+      else
+	{ U32 newLow = rsRankSyng (n.out.rs, *low, out, off) ; // returns rank - 0 if not found
+	  U32 newHigh = rsRankSyng (n.out.rs, *high, out, off) ;
+	  if (newHigh == newLow) return false ;
+	  *high = newHigh ; *low = newLow ;
+	}
+      if (*high > *low)
+	{ if (out > 0 && !(arr(sb->status, out, U8) & NODE_SIMPLE_IN))
+	    { int dr = rsDirRankSyng (arrp(sb->node, out, Node)->in.rs, k, off) ;
+	      *high += dr ; *low += dr ;
+	    }
+	  else if (out < 0 && !(arr(sb->status, -out, U8) & NODE_SIMPLE_OUT))
+	    { int dr = rsDirRankSyng (arrp(sb->node, -out, Node)->out.rs, -k, off) ;
+	      *high += dr ; *low += dr ;
+	    }
+	}
+      }
+  else
+    { if (s & NODE_SIMPLE_IN)
+	if (-out == n.in.sync && off == n.in.offset)
+	  { if (*high > n.in.count) die ("syngBWTmatch error") ; }
+	else return false ;
+      else
+	{ U32 newLow = rsRankSyng (n.in.rs, *low, -out, off) ; // returns rank - 0 if not found
+	  U32 newHigh = rsRankSyng (n.in.rs, *high, -out, off) ;
+	  if (newHigh == newLow) return false ;
+	  *high = newHigh ; *low = newLow ;
+	}
+      if (*high > *low)
+	{ if (out > 0 && !(arr(sb->status, out, U8) & NODE_SIMPLE_IN))
+	    { int dr = rsDirRankSyng (arrp(sb->node, out, Node)->in.rs, k, off) ;
+	      *high += dr ; *low += dr ;
+	    }
+	  else if (out < 0 && !(arr(sb->status, -out, U8) & NODE_SIMPLE_OUT))
+	    { int dr = rsDirRankSyng (arrp(sb->node, -out, Node)->out.rs, -k, off) ;
+	      *high += dr ; *low += dr ;
+	    }
+	}
+    }
+  return (*high > *low) ;
+}
+
 /*******************************************************/
 /************* external interfaces *********************/
 
@@ -385,6 +451,36 @@ bool syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, U32 *offset)
     { sbp->lastNode = sbp->thisNode ;
       sbp->lastOff = *offset ;
       sbp->thisNode = *nextNode ;
+      return true ;
+    }
+  else
+    return false ;
+}
+
+/************* interface to match a new sequence to the BWT, e.g. to find MEMs *******************/
+
+SyngBWTpath *syngBWTmatchStart (SyngBWT *sb, I32 startNode, U32 *high)
+{
+  SyngBWTpath *sbp = pathCreate (sb, startNode) ;
+  if (high)
+    { bool  isPositive = (startNode >= 0) ;
+      I32   kPos = isPositive ? startNode : -startNode ;
+      Node *n = arrp(sb->node,  kPos, Node) ;
+      U8    s = arr(sb->status, kPos, U8) ;
+      if (isPositive)
+	if (s & NODE_SIMPLE_IN) *high = n->in.count ;
+	else *high = rsDirSum (n->in.rs) ; // could be rsLength (n.out.rs) ;
+      else
+	if (s & NODE_SIMPLE_OUT) *high = n->out.count ;
+	else *high = rsDirSum (n->out.rs) ;
+    }
+  return sbp ;
+}
+
+bool syngBWTmatchNext (SyngBWTpath *sbp, I32 nextNode, U32 nextOff, U32 *low, U32 *high)
+{
+  if (syngBWTmatch (sbp->sb, sbp->thisNode, nextNode, nextOff, low, high))
+    { sbp->thisNode = nextNode ;
       return true ;
     }
   else
@@ -493,7 +589,8 @@ static void *threadRead (void *arg)
       // now we have read everything we need to construct the node
       *s = 0 ; // default for empty node
       if (inN > 0 || outN > 0)
-	{ if (inN == 1)
+	{ *s = NODE_EXISTS ;
+	  if (inN == 1)
 	    { *s |= NODE_SIMPLE_IN ;
 	      n->in.sync = inSync[0] ; n->in.offset = inOffset[0] ; n->in.count = inSum[0] ;
 	    }
@@ -506,6 +603,7 @@ static void *threadRead (void *arg)
 	  else
 	    n->out.rs = rsBuildFixedSyng (outN, outSync, outOffset, outNrun, outSym, outRunLen) ;
 	}
+      if (DEBUG) nodeCheck (n, *s) ;
     }
   
   newFree (inSync, EMax, I32) ;   newFree (outSync, eMax, I32) ;
@@ -539,7 +637,7 @@ SyngBWT *syngBWTread (OneFile *of)
     { pthread_join (threads[i], 0) ; // wait for the threads to complete
       eTotal += rt[i].eTotal ;
     }
-  fprintf (stdout, "read GBWT with %lld vertices and %lld edges\n", nv, eTotal) ;
+  printf ("read GBWT with %lld vertices and %lld edges from %s\n", nv, eTotal, oneFileName(of)) ;
 
   arrayMax (sb->node) = nv+1 ; // need to set these because we filled with arrp() for thread safety
   arrayMax (sb->status) = nv+1 ;
