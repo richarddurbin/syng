@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 12 09:01 2026 (rd109)
+ * Last edited: Mar 13 23:27 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -311,7 +311,7 @@ void rsPrint (Rskip rs)
     }
 }
 
-static bool rsCheck (Rskip rs)
+bool rsCheck (Rskip rs)
 {
   if (!rs.linear) die ("rsCheck called on null pointer") ;
   bool isBad = false ;
@@ -383,6 +383,34 @@ static bool rsCheck (Rskip rs)
 		}
 	      //if (!node[j].count)
 	      //  { printf ("--node %d has no counts\n", j) ; isBad = true ; }
+	    }
+	}
+    }
+  else
+    { Fixed *node = rs.fixed ;
+      int nSym = rs.fixed->nSym ;
+
+      // check directory entries
+      if (rsType(rs) == FIXED_SYNG)
+	for (int i = 1 ; i <= nSym ; ++i)
+	  if (node[i].sum != node[i].count)
+	    { printf ("-- dir node %d .sum %d != .count %d\n", i, node[i].sum, node[i].count) ;
+	      isBad = true ;
+	    }
+
+      // find the leftmost node
+      int i = rs.fixed->start ;
+      while (!(node[i].sSum & FLAG32)) i = node[i].down ;
+
+      // check all bottom nodes
+      for ( ; i ; i = node[i].right)
+	{ if (node[i].iSym >= nSym)
+	    { printf ("-- node %d has sym=%u >= nSym=%d\n", i, node[i].sym, nSym) ; isBad = true ; }
+	  if (!node[i].sRight && (node[i].sSum & MASK32) != node[1+node[i].iSym].sum)
+	    { printf ("XX %d\n", i) ;
+	      printf ("-- rightmost %d node %d has sSum %d != directory sum %d\n",
+		      node[i].iSym, i, node[i].sSum & MASK32, node[1+node[i].iSym].sum) ;
+	      isBad = true ;
 	    }
 	}
     }
@@ -474,7 +502,7 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
   // first count some things we will need
   int i, s ;         // generic node counter and symbol index
   int nNode = (type == FIXED_RAW) ? 0 : nSym ; // number of nodes needed - start with the directory
-  int iDepth[nRun] ;    // number of nodes/layers for run i
+  int *iDepth = new (nRun, int) ;    // number of nodes/layers for run i
   int maxDepth = 0 ; // maximum of iDepth[]
   int sFirst[nSym] ;    // the lowest run index i at which symbol s occurs
   int sMaxDepth[nSym] ; // max depth for symbol s
@@ -500,8 +528,8 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
   node[0].sum = node[0].sSum = 0 ; // rsNew's type assignment corrupts byte 3 of sum; clear both
 
   // we will need stack and sStack to set up right and sRight pointers
-  int stack[maxDepth] ; memset (stack, 0, maxDepth*sizeof(int)) ; 
-  int sStack[nSym][maxDepth] ; memset (sStack, 0, nSym*maxDepth*sizeof(int)) ;
+  int  stack[maxDepth] ; memset (stack, 0, maxDepth*sizeof(int)) ;
+  int *sStack = new0 (nSym*maxDepth, int) ; // need to do on heap because may be too big for stack
   // initialise stacks to point to node[0], which is the header node
   // we will use this as a generic empty node with sum = sSum = 0
   // this allows the update for the first node for each symbol skiplist to be 
@@ -520,14 +548,15 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
       for (d = iDepth[i] ; d-- ; )
 	{ nd = &node[next] ;
 	  nd->sum = node[stack[d]].sum ; node[stack[d]].right = next ; stack[d] = next ;
-	  nd->sSum = node[sStack[s][d]].sSum ; node[sStack[s][d]].sRight = next ; sStack[s][d] = next ;
+	  int sd = s*maxDepth+d ;
+	  nd->sSum = node[sStack[sd]].sSum ; node[sStack[sd]].sRight = next ; sStack[sd] = next ;
           if (d) { next = freeNode-- ; nd->down = next ; }
 	}
       nd->sSum |= FLAG32 ; // marker for bottom of the column
       nd->iSym = s ;
       // now go back up the stacks adding on r
       for (d = 0 ; d < maxDepth ; ++d) node[stack[d]].sum += r ;
-      for (d = 0 ; d < sMaxDepth[s] ; ++d) node[sStack[s][d]].sSum += r ;
+      for (d = 0 ; d < sMaxDepth[s] ; ++d) node[sStack[s*maxDepth+d]].sSum += r ;
     }
 
   rs.fixed->sum = rs.fixed->sSum = 0 ;       // need to clear (NB corrupts type byte which overlaps sum)
@@ -537,7 +566,9 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
   rs.fixed->nSym = nSym ;
   if (type == FIXED_SYNG || type == FIXED) // record the counts per symbol
     for (s = 0 ; s < nSym ; ++s)
-      node[1+s].sum = node[1+s].count = node[sStack[s][sMaxDepth[s]-1]].sSum & MASK32 ;
+      node[1+s].sum = node[1+s].count = node[sStack[s*maxDepth+sMaxDepth[s]-1]].sSum & MASK32 ;
+  newFree (sStack, nSym*maxDepth, int) ;
+  newFree (iDepth, nRun, int) ;
   return rs ;
 }
 
@@ -547,7 +578,7 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
   // preliminaries are the same as buildFixed() except we scale max to next power of 2
   int i, s ;         // generic node counter and symbol index
   int nNode = nSym ; // number of nodes needed - allow for directory
-  int iDepth[nRun] ; // number of nodes/layers for run i
+  int *iDepth = new (nRun, int) ; // number of nodes/layers for run i
   int maxDepth = 0 ; // maximum of iDepth[]
   int symMax = -1 ;  // symbol value for max depth
   int sMaxDepth[nSym] ; // max depth for symbol s
@@ -570,7 +601,7 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
   
   // preliminaries for building, stack and sStack as in buildFixed()
   int stack[maxDepth] ; memset (stack, 0, maxDepth*sizeof(int)) ;
-  int sStack[nSym][maxDepth] ; memset (sStack, 0, nSym*maxDepth*sizeof(int)) ;
+  int *sStack = new0 (nSym*maxDepth, int) ; // need to do on heap because may be too big for stack
   int sTop[nSym] ; memset (sTop, 0, nSym*sizeof(int)) ; // top node index per symbol
   int sum = 0, sSum[nSym] ; memset (sSum, 0, nSym*sizeof(int)) ;
 
@@ -586,7 +617,8 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
       for (d = iDepth[i] ; d-- ; ) // NB rely on nodes being cleared to 0 for default values
 	{ Dynamic *nd = &node[next] ;
 	  nd->left = stack[d] ; node[stack[d]].right = next ; stack[d] = next ;
-	  nd->sLeft = sStack[s][d] ; node[sStack[s][d]].sRight = next ; sStack[s][d] = next ;
+	  int sd = s*maxDepth+d ;
+	  nd->sLeft = sStack[sd] ; node[sStack[sd]].sRight = next ; sStack[sd] = next ;
 	  nd->before = nd->left ? node[nd->left].count : sum ;
 	  nd->sBefore = nd->sLeft ? node[nd->sLeft].sCount : sSum[s] ;
 	  nd->iSym = s ;
@@ -595,8 +627,10 @@ static Rskip buildDynamic (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen) 
       sum += r ; sSum[s] += r ;
       // now go back up the stacks adding r to the counts
       for (d = 0 ; d < maxDepth ; ++d) node[stack[d]].count += r ;
-      for (d = 0 ; d < sMaxDepth[s] ; ++d) node[sStack[s][d]].sCount += r ;
+      for (d = 0 ; d < sMaxDepth[s] ; ++d) node[sStack[s*maxDepth+d]].sCount += r ;
     }
+  newFree (sStack, nSym*maxDepth, int) ;
+  newFree (iDepth, nRun, int) ;
 
   rs.dynamic->count = rs.dynamic->sCount = 0 ;      // need to clear
   rs.dynamic->max = 1+nNode ;      // have to set these after building, since space used in building
@@ -626,8 +660,11 @@ Rskip rsBuildFixedSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSym,
   if (size <= MAX_LINEAR) // build in Linear nodes
     { rs = rsNew (LINEAR_SYNG, nSym, size) ; 
       if (fillLinearNodes (rs, nRun, iSym, runLen))
-	{ for (LinearSyngDir *lsd = linearSyngDir (rs) ; nSym-- ; ++lsd)
-	    { lsd->sym = *symbol++ ; lsd->offset = *offset++ ; }
+	{ int i ; U16 sum[nSym] ; for (i = 0 ; i < nSym ; ++i) sum[i] = 0 ;
+	  for (i = 0 ; i < nRun ; ++i) sum[iSym[i]] += runLen[i] ; // need to fill count for Fixed
+	  LinearSyngDir *lsd = linearSyngDir (rs) ;
+	  for (i = 0 ; i < nSym ; ++i)
+	    { lsd[i].sym = *symbol++ ; lsd[i].offset = *offset++ ; lsd[i].count = sum[i] ; }
 	}
       else rs.linear = 0 ;
     }
@@ -1207,7 +1244,8 @@ int rsDirRankSyng (Rskip rs, I32 symbol, U32 offset)
 	  return sum ;
 	else
 	  sum += lsd[i].count ;
-      die ("failed to fine symbol %d offset %u in linear rskip", symbol, offset) ;
+      rsPrint (rs) ;
+      die ("failed to find symbol %d offset %u in linear rskip", symbol, offset) ;
     }
   else if (rs.dynamic->max) // dynamic
     { Dynamic *node = rs.dynamic + 1 ;
@@ -1216,10 +1254,18 @@ int rsDirRankSyng (Rskip rs, I32 symbol, U32 offset)
 	  return sum ;
 	else
 	  sum += node[i].count ;
-      die ("failed to fine symbol %d offset %u in linear rskip", symbol, offset) ;
+      die ("failed to find symbol %d offset %u in dynamic rskip", symbol, offset) ;
     }
   else 
-    die ("non-syng type %d in rsDirRankSyng", rsType(rs)) ;
+    { if (rsType(rs) != FIXED_SYNG) die ("non-syng type %d in rsDirRankSyng", rsType(rs)) ;
+      Fixed *node = rs.fixed + 1 ;
+      for (i = 0 ; i < nSym ; ++i)
+	if (node[i].sym == symbol && node[i].offset == offset) // found it
+	  return sum ;
+	else
+	  sum += node[i].count ;
+      die ("failed to find symbol %d offset %u in fixed rskip", symbol, offset) ;
+    }
 
   return -1 ;
 }
@@ -1308,6 +1354,10 @@ U32 rsDirSum (Rskip rs)
   else if (rsType(rs) == DYNAMIC)
     { Dynamic *node = rs.dynamic + 1 ;
       for (int i = 0 ; i < rs.dynamic->nSym ; ++i) sum += node[i].count ;
+    }
+  else if (rsType(rs) == FIXED_SYNG)
+    { Fixed *node = rs.fixed + 1 ;
+      for (int i = 0 ; i < rs.fixed->nSym ; ++i) sum += node[i].count ;
     }
   else die ("unsupported type %d in rsDirSetCount0", rsType(rs)) ;
   return sum ;
@@ -1483,7 +1533,7 @@ static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not in
     }
   else // fixed - can follow the symbol sub-list, with care
     { Fixed *node = rs.fixed ;
-      U32 i = 1+kSym ; if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) i += rsNsym(rs) ;
+      U32 i = 1+kSym ; if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) i += rs.fixed->nSym ;
       int sSumLast = 0 ;
       while (true) // LOGARITHMIC
         if (node[i].sum < k)
@@ -1509,7 +1559,7 @@ static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not in
       else
 	return val ;
     }
-  die ("shouldn't get here in rsRank") ; return -1 ;
+  rsPrint (rs) ; die ("shouldn't get here in rsRank: k %d kSym %d") ; return -1 ;
 }
 
 int rsRank (Rskip rs, U32 k, I32 symbol)
@@ -1694,7 +1744,7 @@ int main (int argc, char *argv[])
 {
   timeUpdate (0) ;
   --argc ; ++argv ;
-  bool isDynamic = false, isBuild = false, isTime = false, isBlank = false ;
+  bool isDynamic = false, isBuild = false, isTime = false, isBlank = false, isCheck = false ;
   bool isLength = false, isCount = false, isRank = false, isFind = false, isLinear = false ;
   while (argc && *argv[0] == '-')
     if (!strcmp (argv[0], "-dynamic")) { isDynamic = true ; --argc ; ++argv ; }
@@ -1706,6 +1756,7 @@ int main (int argc, char *argv[])
     else if (!strcmp (argv[0], "-time")) { isTime = true ; --argc ; ++argv ; }
     else if (!strcmp (argv[0], "-blank")) { isBlank = true ; --argc ; ++argv ; }
     else if (!strcmp (argv[0], "-linear")) { isLinear = true ; --argc ; ++argv ; }
+    else if (!strcmp (argv[0], "-check")) { isCheck = true ; --argc ; ++argv ; }
     else die ("unknown option %s", argv[0]) ;
   if (argc != 1) die ("%s XX.1gbwt", argv[-1]) ;
 
@@ -1804,6 +1855,8 @@ int main (int argc, char *argv[])
 	  { if (isDynamic) rs = rsBuildDynamicSyng (nSym, symbols, zeros, nRuns, B, C) ;
 	    else rs = rsBuildFixedSyng (nSym, symbols, zeros, nRuns, B, C) ;
 	  }
+
+	if (isCheck && !rsCheck (rs)) die ("rsCheck failed callCount %d", callCount) ;
 	
 	if (!isBlank)
           { if (callCount == DEBUG) rsPrint (rs) ;
