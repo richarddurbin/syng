@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar  4 02:31 2026 (rd109)
+ * Last edited: Mar 12 22:48 2026 (rd109)
  * Created: Mon May 29 08:19:18 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -40,11 +40,13 @@ SyngBWT       *syngBWTcreate (int fixedLen, I64 max) ;
 void           syngBWTdestroy (SyngBWT *sb) ;
 void           syngBWTwrite (OneFile *of, SyngBWT *sb) ;
 SyngBWT       *syngBWTread  (OneFile *of) ;
-SyngBWTpath   *syngBWTpathStartNew (SyngBWT *sb, I32 startNode) ;
-void           syngBWTpathAdd (SyngBWTpath *sbp, I32 nextNode, U32 offset) ; // add to a new path
+SyngBWTpath   *syngBWTpathStartNew (SyngBWT *sb,   I32 startNode) ;
+void           syngBWTpathAdd (SyngBWTpath *sbp,   I32 nextNode, U32 offset) ; // add to a new path
 void           syngBWTpathFinish (SyngBWTpath *sbp) ; // use when creating a new path
-SyngBWTpath   *syngBWTpathStartOld (SyngBWT *sb, I32 startNode, U32 count) ; // follow an existing path
-bool           syngBWTpathNext (SyngBWTpath *sbp, I32 *nextNode, U32 *nextPos) ;
+SyngBWTpath   *syngBWTpathStartOld (SyngBWT *sb,   I32 startNode, U32 count) ; // follow existing path
+bool           syngBWTpathNext (SyngBWTpath *sbp,  I32 *nextNode, U32 *nextPos) ;
+SyngBWTpath   *syngBWTmatchStart (SyngBWT *sb,     I32 startNode, U32 *high) ;
+bool           syngBWTmatchNext (SyngBWTpath *sbp, I32 nextNode, U32 nextOff, U32 *low, U32 *high) ;
 void           syngBWTpathDestroy (SyngBWTpath *sbp) ;
 void           syngBWTstat (SyngBWT *sb) ;
 
