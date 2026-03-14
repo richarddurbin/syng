@@ -5,7 +5,7 @@
  * Description: maps sequences to a <syng>.1gbwt with its <syng>.1khash
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 14 00:15 2026 (rd109)
+ * Last edited: Mar 14 00:49 2026 (rd109)
  * Created: Mon Dec  2 16:18:27 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -14,6 +14,8 @@
 #include "seqhash.h"
 
 extern int pathCount ;
+
+static const int DEBUG = 0 ;
 
 /****************************************************/
 
@@ -197,7 +199,7 @@ int main (int argc, char *argv[])
 
   int i, j ; // general index variables
 
-  nThread = 1 ; // for DEBUGGING
+  if (DEBUG) nThread = 1 ;
   
   // set up the threads
   if (nThread < 1) die ("number of threads %d must be at least 1", nThread) ;
@@ -253,14 +255,16 @@ int main (int argc, char *argv[])
 	  totCount += ti->matchCount ;
 	  totLen   += ti->matchLen ;
 	}
-      printf ("done %'lld sequences, total length %'lld ", nSeq, totSeq) ; timeUpdate (stdout) ;
+      printf ("done %'lld seqs, totLen %'lld, matches %'lld, noMatch %'lld ",
+	      nSeq, totSeq, totMatch, totNoMatch) ;
+      if (totMatch) printf ("avLen %.1f avCnt %.1f ", totLen/(1.*totMatch), totCount/(1.*totMatch)) ;
+      timeUpdate (stdout) ;
     }
   seqIOclose (sio) ;
   if (nSeq)
     { printf ("processed %'lld sequences total %'lld bp (av %.1f) yielding %'lld matches",
 	      nSeq, totSeq, totSeq/(1.0*nSeq), totMatch) ;
-      if (totMatch)
-	printf (" avlen %.1f avcount %.1f", totLen/(1.0*totMatch), totCount/(1.0*totMatch)) ;
+      if (totMatch) printf (" avLen %.1f avCnt %.1f", totLen/(1.*totMatch), totCount/(1.*totMatch)) ;
       putchar ('\n') ;
       printf ("%'lld without matches\n", totNoMatch) ;
       timeUpdate (stdout) ;
