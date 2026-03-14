@@ -5,7 +5,7 @@
  * Description: maps sequences to a <syng>.1gbwt with its <syng>.1khash
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 14 09:28 2025 (rd109)
+ * Last edited: Mar 14 00:15 2026 (rd109)
  * Created: Mon Dec  2 16:18:27 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -13,9 +13,7 @@
 #include "syng.h"
 #include "seqhash.h"
 
-typedef struct {
-  I32 seq, pos ;
-} Loc ;
+extern int pathCount ;
 
 /****************************************************/
 
@@ -40,7 +38,7 @@ static void checkParams (OneFile *of, Params *p)
 
 /****************************************************/
 
-static int filterG = 0, filterQ = 0 ;
+static int filterG = 0, filterQ = 0 ; // global across threads
 
 typedef struct {
   Seqhash  *sh ;
@@ -49,9 +47,7 @@ typedef struct {
   OneFile  *of ;        // output file
   Array     seq ;	// of char, input: concatenated sequences in index 0..3
   Array     seqInfo ;   // of seqInfo - see below
-  Array     pos ;
-  Array     posLen ;
-  Array     sync ;
+  U64       nMatch, nNoMatch, matchLen, matchCount ;
 } ThreadInfo ;
 
 typedef struct {
@@ -66,16 +62,15 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
   ThreadInfo *ti = (ThreadInfo*) arg ;
   int i ;
   I64 seqStart = 0 ;
-  I64 iSync ;
   U64 *uBuf = new(ti->kh->plen,U64) ;
 
-  arrayMax(ti->pos) = 0 ;
-  arrayMax(ti->posLen) = 0 ;
+  ti->nMatch = ti->matchLen = ti->matchCount = ti->nNoMatch = 0 ;
   
   for (i = 0 ; i < arrayMax(ti->seqInfo) ; ++i)
     { SeqInfo *si = arrp(ti->seqInfo, i, SeqInfo) ;
       char *seq = arrp(ti->seq, seqStart, char) ;
       seqStart += si->seqLen ;
+      ++pathCount ;
       if (filterG)
 	{ int j, nG = 0 ;
 	  char *s = seq ;
@@ -84,17 +79,46 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 	    else if (++nG > filterG) { si->seqLen = 0 ; break ; }
 	}
       if (filterQ && si->avQ < filterQ) si->seqLen = 0 ;
-      int pos, posStart = arrayMax(ti->pos) ;
-      SeqhashIterator *sit = syncmerIterator (ti->sh, seq, si->seqLen) ;
-      while (syncmerNext (sit, 0, &pos, 0))
-	{ I64 iPos = arrayMax(ti->pos) ;
-	  array(ti->pos, iPos, I64) = pos ;
-	  iSync = 0 ;
-	  kmerHashFindThreadSafe (ti->kh, seq+pos, &iSync, uBuf) ;
-	  array(ti->sync,iPos,I64) = iSync ; // will be 0 if not found
+      if (si->seqLen)
+	{ SeqhashIterator *sit = syncmerIterator (ti->sh, seq, si->seqLen) ;
+	  SyngBWTpath *sbp = 0 ;
+	  int pos, firstPos, lastPos ;
+	  U32 low = 0, high ;
+	  U64 nMatchIn = ti->nMatch ;
+	  while (syncmerNext (sit, 0, &pos, 0))
+	    { I64 iSync = 0 ;
+	      kmerHashFindThreadSafe (ti->kh, seq+pos, &iSync, uBuf) ;
+	      if (iSync && (iSync > 2 || iSync < -2)) // ignore poly-N
+		{ I32 sync = iSync ;
+		  if (!sbp)
+		    { sbp = syngBWTmatchStart (ti->gbwt, sync, &high) ;
+		      ++ti->nMatch ; firstPos = pos ;
+		    }
+		  else if (!syngBWTmatchNext (sbp, sync, pos-lastPos, &low, &high))
+		    { syngBWTpathDestroy (sbp) ;
+		      ti->matchCount += high - low ;
+		      ti->matchLen += lastPos - firstPos + ti->kh->len ;
+		      low = 0 ;
+		      sbp = syngBWTmatchStart (ti->gbwt, sync, &high) ; // start a new match
+		      ++ti->nMatch ;
+		    }
+		  lastPos = pos ;
+		}
+	      else if (sbp)
+		{ syngBWTpathDestroy (sbp) ;
+		  ti->matchCount += high - low ;
+		  ti->matchLen += lastPos - firstPos + ti->kh->len ;
+		  sbp = 0 ; low = 0 ;
+		} // end of match
+	    }
+	  if (sbp)
+	    { syngBWTpathDestroy (sbp) ; // clean up at end
+	      ti->matchCount += high - low ;
+	      ti->matchLen += lastPos - firstPos + ti->kh->len ;
+	    }
+	  seqhashIteratorDestroy (sit) ;
+	  if (ti->nMatch == nMatchIn) ++ti->nNoMatch ;
 	}
-      seqhashIteratorDestroy (sit) ;
-      array(ti->posLen, i, I64) = arrayMax(ti->pos) - posStart ;
     }
 
   newFree (uBuf, ti->kh->plen, U64) ;
@@ -112,7 +136,7 @@ static char *usage =
   "  -outputNames           : write the names of path sequences I lines\n"
   "  -filterG <nG>          : remove input sequences with runs of >nG consecutive Gs (bad Illumina reads)\n"
   "  -filterQ <QT>          : remove input sequences with average quality score below QT\n"
-  "  -filterIllumina        : equivalent to -filterPolyG 60 -filterQual 30\n" ;
+  "  -filterIllumina        : equivalent to -filterG 60 -filterQ 20\n" ;
 
 int main (int argc, char *argv[])
 {
@@ -142,7 +166,7 @@ int main (int argc, char *argv[])
   // open all the files here, so we can die quickly if any file opens fail
   OneFile *ofK = oneFileOpenRead (argv[0], schema, "khash", 1) ;
   if (!ofK) die ("failed to open .1khash file %s", argv[0]) ;
-  OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", 1) ;
+  OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", nThread) ;
   if (!ofGBWT) die ("failed to open .1gbwt file %s", argv[1]) ;
   SeqIO   *sio = seqIOopenRead (argv[2], dna2index4Conv, false) ;
   if (!sio) die ("failed to open sequence file %s", argv[2]) ;
@@ -169,11 +193,11 @@ int main (int argc, char *argv[])
   // read the BWT
   SyngBWT *sgb = syngBWTread (ofGBWT) ;
   if (!sgb) die ("failed to read GBWT from %s", argv[1]) ;
-  printf ("read GBWT with %llu nodes from %s\n", arrayMax(sgb->node)-1, argv[1]) ;
   oneFileClose (ofGBWT) ;
-  timeUpdate (stdout) ;
 
   int i, j ; // general index variables
+
+  nThread = 1 ; // for DEBUGGING
   
   // set up the threads
   if (nThread < 1) die ("number of threads %d must be at least 1", nThread) ;
@@ -189,10 +213,10 @@ int main (int argc, char *argv[])
     }
 
   // process the sequences
-  I64 totSeq = 0 ;
+  I64 nSeq = 0, totSeq = 0, totMatch = 0, totCount = 0, totLen = 0, totNoMatch = 0 ;
   bool isDone = false ;
-  while (seqIOread (sio))
-    { for (i = 0 ; i < nThread ; ++i)  // read 100Mb DNA per thread and find kmers in parallel
+  while (!isDone)
+    { for (i = 0 ; !isDone && i < nThread ; ++i)  // read 100Mb DNA per thread and process in parallel
 	{ ThreadInfo *ti = &threadInfo[i] ;
 	  arrayMax(ti->seq) = 0 ;
 	  arrayMax(ti->seqInfo) = 0 ;
@@ -205,6 +229,7 @@ int main (int argc, char *argv[])
 	      array(ti->seq, seqStart+seqLen, char) = 0 ;
 	      memcpy (arrp(ti->seq, seqStart, char), sqioSeq(sio), seqLen) ;
 	      seqStart += seqLen ;
+	      ++nSeq ; 
 	      totSeq += seqLen ;
 	      if (sio->isQual && seqLen)
 		{ I64 totQ = 0 ;
@@ -213,21 +238,39 @@ int main (int argc, char *argv[])
 		  si->avQ = totQ / (double)seqLen ;
 		}
 	    }
-	  if (!arrayMax(ti->seq)) isDone = true ; // we are done after processing this lot
+	  if (arrayMax(ti->seq))
+	    pthread_create (&threads[i], 0, threadProcessRead, ti) ;
+	  else
+	    { isDone = true ; // we are done after processing this lot
+	      nThread = i ;   // need to only wait for threads less than this one
+	    }
 	} // loading thread
-      for (i = 0 ; i < nThread ; ++i) // create threads
-	pthread_create (&threads[i], 0, threadProcessRead, &threadInfo[i]) ;
       for (i = 0 ; i < nThread ; ++i)
-	pthread_join (threads[i], 0) ; // wait for threads to complete
+	{ pthread_join (threads[i], 0) ; // wait for threads to complete
+	  ThreadInfo *ti = &threadInfo[i] ;
+	  totMatch += ti->nMatch ;
+	  totNoMatch += ti->nNoMatch ;
+	  totCount += ti->matchCount ;
+	  totLen   += ti->matchLen ;
+	}
+      printf ("done %'lld sequences, total length %'lld ", nSeq, totSeq) ; timeUpdate (stdout) ;
     }
   seqIOclose (sio) ;
-
+  if (nSeq)
+    { printf ("processed %'lld sequences total %'lld bp (av %.1f) yielding %'lld matches",
+	      nSeq, totSeq, totSeq/(1.0*nSeq), totMatch) ;
+      if (totMatch)
+	printf (" avlen %.1f avcount %.1f", totLen/(1.0*totMatch), totCount/(1.0*totMatch)) ;
+      putchar ('\n') ;
+      printf ("%'lld without matches\n", totNoMatch) ;
+      timeUpdate (stdout) ;
+    }
+  
   oneFileClose (ofOut) ;
 
   syngBWTdestroy (sgb) ;
   kmerHashDestroy (kh) ;
   oneSchemaDestroy (schema) ;				   
 				   
-  timeUpdate (stderr) ;
-  timeTotal (stderr) ;
+  printf ("Total usage: ") ; timeTotal (stdout) ;
 }
