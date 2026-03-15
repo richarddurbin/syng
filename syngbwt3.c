@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 14 00:05 2026 (rd109)
+ * Last edited: Mar 15 16:23 2026 (rd109)
  * * Nov 23 01:15 2025 (rd109): converted to skipList (balanced tree)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
@@ -652,11 +652,11 @@ SyngBWT *syngBWTread (OneFile *of)
 
 void syngBWTstat (SyngBWT *sb)
 {
-  int N = arrayMax(sb->node) ;
-  int nSimple = 0, maxTotal = 0, nBlank ;
-  Array eHist = arrayCreate (1024, int) ;
-  Array cHist = arrayCreate (1024, int) ;
-  Array gHist = arrayCreate (1024, int) ;
+  I64 N = arrayMax(sb->node) ;
+  I64 nSimple = 0, maxTotal = 0, nBlank = 0 ;
+  Array eHist = arrayCreate (1024, I64) ;
+  Array cHist = arrayCreate (1024, I64) ;
+  //  Array gHist = arrayCreate (1024, I64) ;
   int i, j ;
   I64 eSum = 0, eTotal = 0 ;
   for (i = 1 ; i < N ; ++i)
@@ -670,10 +670,10 @@ void syngBWTstat (SyngBWT *sb)
       else
 	{ int nSym = rsNsym(n.in.rs), total = 0 ;
 	  I64 count ;
-	  ++array(eHist,nSym,int) ;
+	  ++array(eHist,nSym,I64) ;
 	  for (j = 0 ; j < nSym ; ++j)
 	    { rsDirSyng (n.in.rs, j, 0, 0, &count) ;
-	      ++array(cHist,count,int) ;
+	      ++array(cHist,count,I64) ;
 	      total += count ;
 	      eSum += count ;
 	      eTotal += count * (j+1) ;
@@ -686,10 +686,10 @@ void syngBWTstat (SyngBWT *sb)
       else
 	{ int nSym = rsNsym(n.out.rs), total = 0 ;
 	  I64 count ;
-	  ++array(eHist,nSym,int) ;
+	  ++array(eHist,nSym,I64) ;
 	  for (j = 0 ; j < nSym ; ++j)
 	    { rsDirSyng (n.out.rs, j, 0, 0, &count) ;
-	      ++array(cHist,count,int) ;
+	      ++array(cHist,count,I64) ;
 	      total += count ;
 	      eSum += count ;
 	      eTotal += count * (j+1) ;
@@ -697,18 +697,19 @@ void syngBWTstat (SyngBWT *sb)
 	  if (total > maxTotal) maxTotal = total ;
 	}
     }
-  printf ("  %d nodes of which %d are blank, %d sides are simple, %d sides are complex %.1f%%\n",
+  printf ("  %'lld nodes of which %'lld are blank, %'lld sides are simple, %'lld sides are complex %.1f%%\n",
 	  N, nBlank, nSimple, 2*N - 2*nBlank - nSimple, (2*N-2*nBlank-nSimple)/(0.02*N)) ;
-  printf ("    max in or out edge list %d\n", (int)arrayMax(eHist)) ;
-  printf ("    max count of any one edge %d\n", (int)arrayMax(cHist)) ;
-  printf ("    max total paths through a node %d\n", maxTotal) ;
+  printf ("    max in or out edge list %'lld\n", arrayMax(eHist)) ;
+  printf ("    max count of any one edge %'lld\n", arrayMax(cHist)) ;
+  printf ("    max total paths through a node %'lld\n", maxTotal) ;
   printf ("    expected list search time %.2f\n", eTotal / (1.0*eSum)) ;
-  int bit = 0 ;
-  printf ("edge list dbn\n") ;
-  for (i = 1 ; i < 20 ; ++i)
-    { printf ("    %2d %8d\n", i, arr(eHist, i, int)) ; bit += arr(eHist, i, int) ; }
-  int left = 0 ; while (i < arrayMax(eHist)) left += arr(eHist, i++, int) ; 
-  printf     ("   >20 %8d %8d\n", 2*(N-nBlank-nSimple)-bit, left) ;
+  I64 bit = 0 ;
+  printf ("edge list dbn per side\n") ;
+  printf     ("    %2d %'12lld\n", 1, nSimple) ; bit += nSimple ;
+  for (i = 2 ; i < 20 ; ++i)
+    { printf ("    %2d %'12lld\n", i, arr(eHist, i, I64)) ; bit += arr(eHist, i, I64) ; }
+  I64 left = 0 ; while (i < arrayMax(eHist)) left += arr(eHist, i++, I64) ; 
+  printf     ("   >20 %'12lld\n", left) ;
   arrayDestroy (eHist) ; arrayDestroy (cHist) ;
 }
 
