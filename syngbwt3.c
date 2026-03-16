@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 15 16:23 2026 (rd109)
+ * Last edited: Mar 16 09:14 2026 (rd109)
  * * Nov 23 01:15 2025 (rd109): converted to skipList (balanced tree)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
@@ -186,13 +186,14 @@ static U32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, U32 inOff, U32 j, I32 out, U3
   U8   *s = arrayp(sb->status, kPos, U8) ;
   static int MAX = 65000 ;
 
-  static U32 callCount = 0 ; ++callCount ;
+  static U64 callCount = 0 ; ++callCount ;
   if (DEBUG == kPos)
-    printf ("syngBWTadd %u k %d s %u in %d inOff %u j %u out %d outOff %u\n",
+    printf ("syngBWTadd %'llu k %d s %u in %d inOff %u j %u out %d outOff %u\n",
 	    callCount, k, *s, in, inOff, j, out, outOff) ;
   
   U32 jOrig = j ;
-  if ((I32)jOrig < 0) die ("syngBWTadd negative input j %d callCount %d k %d", (I32)j, callCount, k) ;
+  if ((I32)jOrig < 0)
+    die ("syngBWTadd negative input j %d callCount %llu k %d", (I32)j, callCount, k) ;
 
   if (callCount == 0) // set to bad callCount for debugging
     printf ("!!wierdness here\n") ;
@@ -274,13 +275,13 @@ static U32 syngBWTadd (SyngBWT *sb, I32 k, I32 in, U32 inOff, U32 j, I32 out, U3
 
   if (DEBUG && nodeCheck (n, *s))
     { nodePrint (n, *s) ;
-      printf ("syngBWTadd %u k %d s %u in %d inOff %u j %u out %d outOff %u\n",
+      printf ("syngBWTadd %llu k %d s %u in %d inOff %u j %u out %d outOff %u\n",
 	      callCount, k, *s, in, inOff, j, out, outOff) ;
       die ("syngBWTadd nodeCheck fail callCount %d k retVal %d", callCount, retVal) ;
     }
   
   if (DEBUG == kPos) nodePrint (n, *s) ;
-  if (retVal < 0) die ("syngBWTadd -ve output retVal %d callCount %d k %d", retVal, callCount, k) ;
+  if (retVal < 0) die ("syngBWTadd -ve output retVal %d callCount %llu k %d", retVal, callCount, k) ;
 
   return (U32)retVal ;
 }

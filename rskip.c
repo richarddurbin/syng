@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 13 23:27 2026 (rd109)
+ * Last edited: Mar 16 09:10 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -515,7 +515,7 @@ static Rskip buildFixed (U8 type, int nSym, int nRun, I64 *iSym, I64 *runLen)
       if (iDepth[i] > sMaxDepth[iSym[i]]) sMaxDepth[iSym[i]] = iDepth[i] ;
     }
   for (s = 0 ; s < nSym ; ++s)
-    { if (sFirst[s] == -1) die ("unused symbol %d < %d", s, nSym) ; // confirm no unused symbols
+    { if (sFirst[s] == -1) warn ("unused symbol %d < %d", s, nSym) ; // confirm no unused symbols
       // now ensure that the first column for s has maximal depth of all columns for s
       nNode += sMaxDepth[s] - iDepth[sFirst[s]] ; iDepth[sFirst[s]] = sMaxDepth[s] ;
     }
@@ -995,7 +995,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 {
   Rskip rs = *rsp ;
   int nSym = rsNsym (rs) ;
-  static int callCount = 0 ; ++callCount ;
+  static U64 callCount = 0 ; ++callCount ;
 
   // linear case first - do increments here and expansions in rebuildAddLinear
   if (rs.linear->max)
@@ -1025,12 +1025,12 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	  else if (count > 254 && count < MAX_BIG) ++node->bigCount ;
 	  else *rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
 	  sSum -= (sum - k) ;
-	  if (sSum < 0) die ("sSum %d < 0 in addDirect callCount %d", sSum, callCount) ;
+	  if (sSum < 0) die ("sSum %d < 0 in addDirect callCount %llu", sSum, callCount) ;
 	}
       else
 	*rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
       if (DEBUG && !rsCheck (*rsp))
-	die ("rsCheck failed after linear addDirect call %d k %d kSym %d", callCount, k, kSym) ;
+	die ("rsCheck failed after linear addDirect call %llu k %d kSym %d", callCount, k, kSym) ;
       return sSum ;
     }
 
@@ -1038,7 +1038,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
   else if (!rs.linear->max && rs.dynamic->max)
     { Dynamic *node = rs.dynamic ;
       if (callCount == DEBUG)
-	{ printf ("addDirect dynamic callCount %d k %u kSym %u\n", callCount, k, kSym) ;
+	{ printf ("addDirect dynamic callCount %llu k %u kSym %u\n", callCount, k, kSym) ;
 	  rsPrint (rs) ;
 	}
 
@@ -1086,7 +1086,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	      { sum = sum + node[iLeft].count ; iLeft = node[iLeft].right ;
 		if (iLeft == 0)
 		  { rsPrint (rs) ;
-		    die ("rsAddDirect callCount %d k %d off end sum = %d length %d",
+		    die ("rsAddDirect callCount %llu k %d off end sum = %d length %d",
 			 callCount, k, sum, rsLength(rs)) ;
 		  }
 	      }
@@ -1095,7 +1095,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	  sum += node[iLeft].count ;
 	  iRight = node[iLeft].right ; // can be 0
 	}
-      // printf ("rsAddDirect DYNAMIC callCount %d k %d sum %d iLeft %d iRight %d\n", callCount, k, sum, iLeft, iRight) ;
+      // printf ("rsAddDirect DYNAMIC callCount %llu k %d sum %d iLeft %d iRight %d\n", callCount, k, sum, iLeft, iRight) ;
       if (k > sum) die ("k %u > sum %d in rsAddDirect dynamic", k, sum) ;
       if (!iLeft && !k) sum = 0 ; // deal with 0 case protected above
 
@@ -1118,7 +1118,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 			 iLeft, node[iLeft].sRight, k - sum + node[iLeft].count,
 			 node[iLeft].sCount - (k - sum + node[iLeft].count)) ;
 	      if (DEBUG && !rsCheck (rs))
-		die ("failed rsCheck after split addColumn: callCount %d", callCount) ;
+		die ("failed rsCheck after split addColumn: callCount %llu", callCount) ;
 	      iRight = node[iLeft].right ; // this is the bottom of the new column
 	      sum = k ; // by construction - NB will trigger next block via "if (sum == k)"
 	      // we don't need to set isLeft and isRight here - we will do that in the next block
@@ -1146,7 +1146,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 		    { for (isRight = iRight ; isRight ; isRight = node[isRight].right)
 			if (node[isRight].sym == kSym) break ;
 		      if (!isRight)
-			{ printf ("SCREWUP: addDirect callCount %d, k %u, kSym %u, nSym %u\n",
+			{ printf ("SCREWUP: addDirect callCount %llu, k %u, kSym %u, nSym %u\n",
 				  callCount, k, kSym, rs.dynamic->nSym) ;
 			  rsPrint (rs) ;
 			  die ("screwup finding isLeft %d, isRight %d - iLeft %d iRight %d",
@@ -1164,7 +1164,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 			 iLeft, iRight, iLeft ? node[iLeft].count : 0, 0,
 			 isLeft, isRight, isLeft ? node[isLeft].sCount : 0, 0) ;
 	      	      if (DEBUG && !rsCheck (rs))
-	      		die ("failed rsCheck after insert addColumn: callCount %d", callCount) ;
+	      		die ("failed rsCheck after insert addColumn: callCount %llu", callCount) ;
 	      // now reset iLeft and isLeft to the bottom of the new column
 	      isLeft = iLeft = iLeft ? node[iLeft].right : node[iRight].left ;
 	      // iRight = node[iLeft].right ; isRight = node[isLeft].sRight ; // should not change
@@ -1200,7 +1200,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	}
       ++node[kSym+1].sum ; // update directory total
       if (DEBUG && !rsCheck (rs))
-	die ("failed rsCheck after increments: callCount %d", callCount) ;
+	die ("failed rsCheck after increments: callCount %llu", callCount) ;
       return sSum ; // this is the only ultimate real return location for Dynamic
     }
   else return rsError (RS_ERROR_LOCKED, "rsAdd", "") ;
