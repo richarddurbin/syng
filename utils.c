@@ -5,7 +5,7 @@
  * Description: core utility functions
  * Exported functions:
  * HISTORY:
- * Last edited: Jan 10 21:01 2026 (rd109)
+ * Last edited: Mar 17 23:36 2026 (rd109)
  * * Feb 22 14:52 2019 (rd109): added fzopen()
  * Created: Thu Aug 15 18:32:26 1996 (rd)
  *-------------------------------------------------------------------
@@ -19,6 +19,8 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include "utils.h"
+
+/***************** die and warn *******************/
 
 void die (char *format, ...)
 {
@@ -44,6 +46,8 @@ void warn (char *format, ...)
   va_end (args) ;
 }
 
+/******************** command line ********************/
+
 static char* commandLine = 0 ;
 
 void storeCommandLine (int argc, char **argv)
@@ -58,6 +62,10 @@ void storeCommandLine (int argc, char **argv)
 
 char *getCommandLine (void) { return commandLine ; }
 
+/********************* memory allocation ***********************/
+
+//#define DEBUG_MEMORY
+
 static unsigned long totalAllocated = 0 ;
 static unsigned long maxAllocated = 0 ;
 
@@ -67,6 +75,9 @@ void *myalloc (size_t size)
   if (!p) die ("myalloc failure requesting %d bytes - totalAllocated %lu", size, totalAllocated) ;
   totalAllocated += size ;
   if (totalAllocated > maxAllocated) maxAllocated = totalAllocated ;
+#ifdef DEBUG_MEMORY
+  fprintf (stderr, "MEMORY alloc %'zu total %'lu\n", size, totalAllocated) ;
+#endif
   return p ;
 }
 
@@ -78,13 +89,22 @@ void *mycalloc (size_t number, size_t size)
 	 number, size, totalAllocated) ;
   totalAllocated += size*number ;
   if (totalAllocated > maxAllocated) maxAllocated = totalAllocated ;
+#ifdef DEBUG_MEMORY
+  fprintf (stderr, "MEMORY alloc0 %'zu number %'zu size %'zu total %'lu\n",
+	   number*size, number, size, totalAllocated) ;
+#endif
   return p ;
 }
 
 void  myfree   (void* x, size_t size)
 {
-  totalAllocated -= size ;
-  if (x) free (x) ; // allows to reduce size
+  if (x)
+    { free (x) ; // allows to reduce size
+      totalAllocated -= size ;
+#ifdef DEBUG_MEMORY
+      fprintf (stderr, "MEMORY free %'zu total %'lu\n", size, totalAllocated) ;
+#endif
+    }
 }
 
 void *myresize (void* x, size_t nOld, size_t nNew, size_t size)
@@ -94,6 +114,8 @@ void *myresize (void* x, size_t nOld, size_t nNew, size_t size)
   myfree (x, nOld*size) ;
   return z ;
 }
+
+/**************** file handling *****************/
 
 char *fgetword (FILE *f)
 {
