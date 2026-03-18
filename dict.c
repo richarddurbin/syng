@@ -20,7 +20,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: May 29 12:50 2023 (rd109)
+ * Last edited: Mar 17 23:54 2026 (rd109)
  * Created: July 2003 (rd)
  *-------------------------------------------------------------------
  */
@@ -28,16 +28,6 @@
 #include "dict.h"
 
 #include "array.h"
-
-/****************************************/
-
-static void* remap (void *old, U64 oldSize, U64 newSize)
-{
-  void* new = mycalloc (newSize, 1) ;
-  memcpy (new, old, oldSize) ;
-  free (old) ;
-  return new ;
-}
 
 /****************************************/
 
@@ -65,11 +55,11 @@ static U64 hashString (char *cp, U64 n, bool isDiff)
 
 DICT *dictCreate (U64 size)
 {
-  DICT *dict = (DICT*) mycalloc (1, sizeof(DICT)) ;
+  DICT *dict = new0 (1, DICT) ;
 
   for (dict->dim = 10, dict->size = 1024 ; dict->size < size ; ++dict->dim, dict->size *= 2) ;
-  dict->table = (U64*) mycalloc (dict->size, sizeof(U64)) ;
-  dict->names = (char**) mycalloc (dict->size/2, sizeof(char*)) ;
+  dict->table = new0 (dict->size, U64) ;
+  dict->names = new0 (dict->size/2, char*) ;
   return dict ; 
 }
 
@@ -78,10 +68,10 @@ DICT *dictCreate (U64 size)
 void dictDestroy (DICT *dict)
 {
   U64 i ;
-  for (i = 1 ; i <= dict->max ; ++i) free (dict->names[i]) ;
-  free (dict->names) ;
-  free (dict->table) ;
-  free (dict) ;
+  for (i = 1 ; i <= dict->max ; ++i) newFree (dict->names[i], strlen(dict->names[i])+1, 1) ;
+  newFree (dict->names, dict->size/2, char*) ;
+  newFree (dict->table, dict->size, U64) ;
+  newFree (dict, 1, DICT) ;
 }
 
 /*****************************/
@@ -171,8 +161,11 @@ bool dictAdd (DICT *dict, char *s, U64 *ip)
   if (dict->max > 0.3 * dict->size) /* double table size and remap */
     { U64 *newTable ;
       ++dict->dim ; dict->size *= 2 ;
-      dict->names = (char**) remap (dict->names, (dict->max+1)*sizeof(char*), (dict->size/2)*sizeof(char*)) ;
-      newTable = (U64*) mycalloc (dict->size, sizeof(U64)) ;
+      char **oldNames = dict->names ;
+      dict->names = new0 (dict->size/2, char*) ;
+      memcpy (dict->names, oldNames, (dict->max+1)*sizeof(char*)) ;
+      newFree (oldNames, dict->size/4, char*) ;
+      newTable = new0 (dict->size, U64) ;
       for (i = 1 ; i <= dict->max ; ++i)
 	{ s = dict->names[i] ;
 	  x = hashString (s, dict->dim, 0) ;
@@ -187,7 +180,7 @@ bool dictAdd (DICT *dict, char *s, U64 *ip)
 		}
 	    }
 	}
-      free (dict->table) ; dict->table = newTable ;
+      newFree (dict->table, dict->size/2, U64) ; dict->table = newTable ;
     }
 
   return true ;

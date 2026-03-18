@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 11 23:03 2026 (rd109)
+ * Last edited: Mar 18 00:01 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -418,7 +418,7 @@ int main (int argc, char *argv[])
   if (sources)
     { if (ofK) addSourceReferences (ofK, sources) ;
       if (ofOut) addSourceReferences (ofOut, sources) ;
-      char **s = sources ; while (*s) { free (*s) ; ++s ; }
+      char **s = sources ; while (*s) { free (*s) ; ++s ; } // use free() because created with strdup
       newFree (sources, maxSources, char*) ;
     }
   

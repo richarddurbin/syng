@@ -5,7 +5,7 @@
  * Description: buffered package to read arbitrary sequence files - much faster than readseq
  * Exported functions:
  * HISTORY:
- * Last edited: Jan  6 11:22 2025 (rd109)
+ * Last edited: Mar 18 00:24 2026 (rd109)
  * * Dec 15 09:45 2022 (rd109): separated out 2bit packing/unpacking into SeqPack
  * Created: Fri Nov  9 00:21:21 2018 (rd109)
  *-------------------------------------------------------------------
@@ -33,7 +33,7 @@ SeqIO *seqIOopenRead (char *filename, int* convert, bool isQual)
   SeqIO *si = new0 (1, SeqIO) ;
   if (!strcmp (filename, "-")) si->gzf = gzdopen (fileno (stdin), "r") ;
   else si->gzf = gzopen (filename, "r") ;
-  if (!si->gzf) { free(si) ; return 0 ; }
+  if (!si->gzf) { newFree(si,1,SeqIO) ; return 0 ; }
   si->bufSize = 1<<24 ; // 16 MB
   si->b = si->buf = new (si->bufSize, char) ;
   si->convert = convert ;
@@ -162,9 +162,9 @@ void seqIOclose (SeqIO *si)
 	  seqIOflush (si) ;
 	}
     }
-  free (si->buf) ;
-  if (si->seqBuf) free (si->seqBuf) ;
-  if (si->qualBuf) free (si->qualBuf) ;
+  newFree (si->buf, si->bufSize, char) ;
+  if (si->seqBuf) newFree (si->seqBuf, si->maxSeqLen+1, char) ;
+  if (si->qualBuf) newFree (si->qualBuf, si->maxSeqLen+1, char) ;
   if (si->gzf) gzclose (si->gzf) ;
   if (si->fd) close (si->fd) ;
 #ifdef ONEIO
@@ -175,7 +175,7 @@ void seqIOclose (SeqIO *si)
   if (si->type == BAM)
     bamFileClose (si) ;
 #endif
-  free (si) ;
+  newFree (si, 1, SeqIO) ;
 }
 
 /********** local routines for seqIOread() ***********/
@@ -194,7 +194,7 @@ static void bufDouble (SeqIO *si)
   char *newbuf = new (si->bufSize*2, char) ;
   memcpy (newbuf, si->buf, si->bufSize) ;
   si->b = newbuf + si->bufSize ; si->nb = si->bufSize ; /* rely on being at end of old buf */
-  free (si->buf) ; si->buf = newbuf ;
+  newFree (si->buf, si->bufSize, char) ; si->buf = newbuf ;
   si->nb = gzread (si->gzf, si->b, si->bufSize) ;
   si->bufSize *= 2 ;
 }
@@ -234,7 +234,10 @@ bool seqIOread (SeqIO *si)
       if (vf->lineType != 'S') return false ; // at end of file
       si->seqLen = oneLen(vf) ; // otherwise we are at an 'S' line
       if (si->seqLen > si->maxSeqLen)
-	{ if (si->maxSeqLen) { free (si->seqBuf) ; if (si->isQual) free (si->qualBuf) ; }
+	{ if (si->maxSeqLen)
+	    { newFree (si->seqBuf, si->maxSeqLen+1, char) ;
+	      if (si->isQual) newFree (si->qualBuf, si->maxSeqLen+1, char) ;
+	    }
 	  si->maxSeqLen = si->seqLen ;
 	  si->seqBuf = new0 (si->maxSeqLen+1, char) ;
 	  if (si->isQual) si->qualBuf = new0 (si->maxSeqLen+1, char) ;
@@ -384,7 +387,11 @@ SeqIO *seqIOopenWrite (char *filename, SeqIOtype type, int* convert, int qualThr
       else if (!strcmp (ext, "fasta") || !strcmp (ext, "fa")) si->type = FASTA ;
       else if (!strcmp (ext, "fastq") || !strcmp (ext, "fq")) si->type = FASTQ ;
       else if (*ext == '1') si->type = ONE ;
-      else { warn ("can't determine sequence file type for %s", filename) ; free(si) ; return 0 ; }
+      else
+	{ warn ("can't determine sequence file type for %s", filename) ;
+	  newFree(si, 1, SeqIO) ;
+	  return 0 ;
+	}
     }
   
   if (si->type == ONE) 
@@ -394,7 +401,7 @@ SeqIO *seqIOopenWrite (char *filename, SeqIOtype type, int* convert, int qualThr
       //      if (*ext == '1') ++ext ; oneType = ext ; // don't think I want this
       OneFile *vf = oneFileOpenWriteNew (filename, schema, oneType, true, 1) ;
       oneSchemaDestroy (schema) ;
-      if (!vf) { free (si) ; return 0 ; }
+      if (!vf) { newFree (si, 1, SeqIO) ; return 0 ; }
       si->handle = vf ;
       char *commandLine = getCommandLine() ;
       if (!commandLine) commandLine = "-" ;
@@ -403,30 +410,30 @@ SeqIO *seqIOopenWrite (char *filename, SeqIOtype type, int* convert, int qualThr
     }
 #else
     { warn ("sorry, seqio not compiled with ONElib so can't write 1seq") ;
-      free (si) ; return 0 ;
+      newFree (si, 1, SeqIO) ; return 0 ;
     }
 #endif
 
   if (si->type == BAM)
     { warn ("sorry, seqio can't write BAM") ;
-      free (si) ; return 0 ;
+      newFree (si, 1, SeqIO) ; return 0 ;
     }
   
   if (!strcmp (filename, "-"))
     { si->fd = fileno (stdout) ;
-      if (si->fd == -1) { warn ("failed to write to stdout") ; free (si) ; return 0 ; }
+      if (si->fd == -1) { warn ("failed to write to stdout") ; newFree(si,1,SeqIO) ; return 0 ; }
     }
   else if (!strcmp (filename, "-z"))
     { si->gzf = gzdopen (fileno(stdout), "w") ;
-      if (!si->gzf) { warn ("failed to gzdopen stdout", filename) ; free (si) ; return 0 ; }
+      if (!si->gzf) { warn ("failed to gzdopen stdout", filename) ; newFree(si,1,SeqIO) ; return 0 ; }
     }
   else if (isGzip)
     { si->gzf = gzopen (filename, "w") ;
-      if (!si->gzf) { warn ("failed to gzopen %s", filename) ; free (si) ; return 0 ; }
+      if (!si->gzf) { warn ("failed to gzopen %s", filename) ; newFree(si,1,SeqIO) ; return 0 ; }
     }
   else
     { si->fd = open (filename, O_CREAT | O_TRUNC | O_WRONLY, 00644) ;
-      if (si->fd == -1) { warn ("failed to open %s", filename) ; free (si) ; return 0 ; }
+      if (si->fd == -1) { warn ("failed to open %s", filename) ; newFree(si,1,SeqIO) ; return 0 ; }
     }
   if (si->type == BINARY && si->gzf)
     { fprintf (stderr, "can't write a gzipped binary file\n") ; seqIOclose (si) ; return 0 ; }
@@ -478,8 +485,8 @@ void seqIOflush (SeqIO *si)	/* writes buffer to file and resets to 0 */
 
 static void writeExtend (SeqIO *si, U64 len)
 {
+  newFree (si->buf, si->bufSize, char) ;
   while (si->bufSize < len) si->bufSize <<= 1 ;
-  free (si->buf) ;
   si->b = si->buf = new (si->bufSize, char) ;
   si->nb = si->bufSize ;
 }
@@ -509,7 +516,7 @@ void seqIOwrite (SeqIO *si, char *id, char *desc, U64 seqLen, char *seq, char *q
       static char *buf = 0 ;
       I64 i ;
       if (seqLen > bufLen)
-	{ if (buf) free (buf) ;
+	{ if (buf) newFree (buf, bufLen+1, char) ;
 	  bufLen = seqLen ;
 	  buf = new(bufLen+1,char) ;
 	}
@@ -789,7 +796,7 @@ U64 seqMatchPacked2 (U8 *a, U64 ia, U8 *b, U64 ib, U64 len) /* returns 0 or dist
   U64 i = 0 ;
   char *sa = seqUnpack (sp, a, 0, ia, len), *sb = seqUnpack (sp, b, 0, ib, len) ;
   while (i < len && sa[i] == sb[i]) i++ ;
-  free (sa) ; free (sb) ;
+  newFree (sa, len+1, char) ; newFree (sb, len+1, char) ;
   if (i == len) return 0 ; else return i+1 ;
 }
 
@@ -1143,7 +1150,10 @@ bool bamRead (SeqIO *si)
   
   si->seqLen = bf->b->core.l_qseq ;
   if (si->seqLen > si->maxSeqLen)
-    { if (si->maxSeqLen) { free (si->seqBuf) ; if (si->isQual) free (si->qualBuf) ; }
+    { if (si->maxSeqLen)
+	{ newFree (si->seqBuf, si->maxSeqLen+1, char) ;
+	  if (si->isQual) newFree (si->qualBuf, si->maxSeqLen+1, char) ;
+	}
       si->maxSeqLen = si->seqLen ;
       si->seqBuf = new0 (si->maxSeqLen+1, char) ;
       if (si->isQual) si->qualBuf = new0 (si->maxSeqLen+1, char) ;
@@ -1183,7 +1193,7 @@ void bamFileClose (SeqIO *si)
   if (bf->b) bam_destroy1 (bf->b) ;
   if (bf->h) sam_hdr_destroy (bf->h) ;
   if (bf->f) sam_close (bf->f) ;
-  free (bf) ;
+  free (bf) ; // leave free() here because it was allocated by sam_open()
 }
 
 #endif

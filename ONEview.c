@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Nov 30 21:54 2024 (rd109)
+ * Last edited: Mar 18 00:18 2026 (rd109)
  * * May 15 02:26 2024 (rd109): incorporate rd utilities so stand alone
  * Created: Thu Feb 21 22:40:28 2019 (rd109)
  *-------------------------------------------------------------------
@@ -26,9 +26,10 @@ char *commandLine (int argc, char **argv) ;
 
 void *myalloc (size_t size) ;
 void *mycalloc (size_t number, size_t size) ;
+void myfree (void *x, size_t size) ;
 #define	new(n,type)	(type*)myalloc((n)*sizeof(type))
 #define	new0(n,type)	(type*)mycalloc((n),sizeof(type))
-#define resize(x,nOld,nNew,T) { T* z = new((nNew),T) ; if (nOld < nNew) memcpy(z,x,(nOld)*sizeof(T)) ; else memcpy(z,x,(nNew)*sizeof(T)) ; free(x) ; x = z ; }
+#define resize(x,nOld,nNew,T) { T* z = new((nNew),T) ; if (nOld < nNew) memcpy(z,x,(nOld)*sizeof(T)) ; else memcpy(z,x,(nNew)*sizeof(T)) ; myfree(x,(nOld)*sizeof(T)) ; x = z ; }
 
 void timeUpdate (FILE *f) ;	/* print time usage since last call to file */
 void timeTotal (FILE *f) ;	/* print full time usage since first call to timeUpdate */
@@ -247,6 +248,14 @@ void *mycalloc (size_t number, size_t size)
   if (!p) die ("mycalloc failure requesting %d objects of size %d - totalAllocated %ld", number, size, totalAllocated) ;
   totalAllocated += size*number ;
   return p ;
+}
+
+void myfree (void *x, size_t size)
+{
+  if (x)
+    { free (x) ;
+      totalAllocated -= size ;
+    }
 }
 
 /***************** rusage for timing information ******************/
