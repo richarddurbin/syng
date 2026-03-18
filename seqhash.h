@@ -5,7 +5,7 @@
  * Description: header file for seqhash package - minimizers and moshers
  * Exported functions: see below
  * HISTORY:
- * Last edited: Jul 24 14:38 2023 (rd109)
+ * Last edited: Mar 17 23:28 2026 (rd109)
  * Created: Mon Mar  5 08:43:45 2018 (rd)
  *-------------------------------------------------------------------
  */
@@ -35,7 +35,7 @@ typedef struct {
 } SeqhashIterator ;
 
 Seqhash *seqhashCreate (int k, int w, int seed) ;
-static void seqhashDestroy (Seqhash *sh) { free (sh) ; }
+static void seqhashDestroy (Seqhash *sh) { newFree (sh, 1, Seqhash) ; }
 
 void seqhashWrite (Seqhash *sh, FILE *f) ;
 Seqhash *seqhashRead (FILE *f) ;
@@ -49,7 +49,10 @@ SeqhashIterator *seqhashIterator (Seqhash *sh, char *s, int len) ;
 bool seqhashNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) ;
 
 static void seqhashIteratorDestroy (SeqhashIterator *si)
-{ free (si->hash) ; free (si->isForward) ; free (si) ; }
+{ newFree (si->hash, si->sh->w, U64) ;
+  newFree (si->isForward, si->sh->w, bool) ;
+  newFree (si, 1, SeqhashIterator) ;
+}
 
 // iterator to extract minimizers from a sequence
 // NB sequence must continue to exist through the life of the iterator
