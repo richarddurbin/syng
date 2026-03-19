@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 18 00:01 2026 (rd109)
+ * Last edited: Mar 19 14:08 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -203,23 +203,32 @@ static bool oneFileTest (char* fname)
   return (peek == '1') ;
 }
 
+static inline char **doubleSources (char **sources, int *maxSources)
+{
+  char **x = new0 (*maxSources*2, char*) ;
+  memcpy (x, sources, *maxSources*sizeof(char*)) ;
+  newFree (sources, *maxSources, char*) ;
+  *maxSources *= 2 ; 
+  return x ;
+}
+
 static char **collectSources (int argc, char *argv[], int *maxSources)
 {
   OneFile *of ;
   int  i, nSources = 0 ;
-  *maxSources = 1024 ;
+  *maxSources = 32 ;
   char **sources = new0 (*maxSources, char*) ;
   while (argc--)
     { if (oneFileTest (*argv) && (of = oneFileOpenRead (*argv, 0, 0, 1)))
-	{ if (nSources + oneReferenceCount(of) >= *maxSources)
-	    newDouble (sources, *maxSources, char*) ;
+	{ while (nSources + oneReferenceCount(of) >= *maxSources)
+	    sources = doubleSources (sources, maxSources) ;
 	  for (i = 0 ; i < oneReferenceCount(of) ; ++i)
 	    sources[nSources++] = strdup (of->reference[i].filename) ;
 	  oneFileClose (of) ;
 	}
       else
 	{ if (nSources + 1 >= *maxSources)
-	    newDouble (sources, *maxSources, char*) ;
+	    sources = doubleSources (sources, maxSources) ;
 	  sources[nSources++] = strdup (*argv) ;
 	}
       ++argv ;
