@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 16 22:07 2025 (rd109)
+ * Last edited: Mar 24 12:11 2026 (rd109)
  * Created: Tue Sep  3 19:39:02 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -27,7 +27,7 @@ typedef struct {
   I64     *table ;   // the main table indexed by the hash
   I64      mask ;    // mask limited to tsize bits
   I64      max ;     // current number of entries
-  int      plen ;    // packed sequence length = (len+31) >> 5
+  U64      plen ;    // packed sequence length = (len+31) >> 5
   U64      psize ;   // max number of elements in pack before doubling
   U64     *pack ;    // the packed sequences
   char    *seqbuf ;  // size len+1, for printing out sequences
