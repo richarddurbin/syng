@@ -5,7 +5,7 @@
  * Description: includes standard system headers and own headers
  * Exported functions:
  * HISTORY:
- * Last edited: Oct 19 05:03 2024 (rd109)
+ * Last edited: Mar 24 12:14 2026 (rd109)
  * Created: Wed Jan  5 16:13:48 2011 (rd)
  *-------------------------------------------------------------------
  */
@@ -47,11 +47,11 @@ void *myalloc  (size_t size) ;
 void *mycalloc (size_t number, size_t size) ;
 void *myresize (void* x, size_t nOld, size_t nNew, size_t size) ;
 void  myfree   (void* x, size_t size) ;
-#define	new(n,type)                 (type*)myalloc((n)*sizeof(type))
-#define	new0(n,type)	            (type*)mycalloc((n),sizeof(type))
-#define newResize(x,nOld,nNew,type) (type*) myresize((x),(nOld),(nNew),sizeof(type))
-#define newDouble(x,n,type)         myresize((x),(n),2*(n),sizeof(type)), (n) = 2*(n)
-#define	newFree(x,n,type)           myfree((x),(n)*sizeof(type))
+#define	new(n,type)                 (type*)myalloc((size_t)(n)*sizeof(type))
+#define	new0(n,type)	            (type*)mycalloc((size_t)(n),sizeof(type))
+#define newResize(x,nOld,nNew,type) (type*) myresize((x),(size_t)(nOld),(size_t)(nNew),sizeof(type))
+#define newDouble(x,n,type)         myresize((x),(size_t)(n),(size_t)(2*(n)),sizeof(type)), (n)*=2
+#define	newFree(x,n,type)           myfree((x),(size_t)((n)*sizeof(type)))
 
 void  storeCommandLine (int argc, char *argv[]) ;
 char *getCommandLine (void) ;
