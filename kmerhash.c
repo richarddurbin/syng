@@ -5,7 +5,7 @@
  * Description: fixed length DNA string hash set package (e.g. syncmers)
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 16 22:50 2025 (rd109)
+ * Last edited: Mar 24 16:29 2026 (rd109)
  * Created: Tue Sep  3 19:38:07 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -127,7 +127,7 @@ bool kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and 
 static void doubleTable (KmerHash *kh)
 {
   ++kh->dim ;
-  I64 *newTable = new0 (1 << kh->dim, I64) ;
+  I64 *newTable = new0 (((U64)1) << kh->dim, I64) ;
   kh->mask = (1 << kh->dim) - 1 ;
   U64  i ;
   for (i = 1 ; i <= kh->max ; ++i) // remap all the packed sequences into newTable
