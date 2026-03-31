@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 27 20:24 2025 (rd109)
+ * Last edited: Mar 31 13:04 2026 (rd109)
  * Created: Sun Mar 16 17:20:12 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -61,6 +61,7 @@ SyncmerSet *syncmerSetCreate (SyncmerParams params, U64 initialSize)
   sms->count = arrayCreate (aSize, I64) ;
   sms->thisCount = arrayCreate (aSize, char) ;
   sms->maxCount = arrayCreate (aSize, char) ;
+  sms->loc = arrayCreate (aSize, I64) ;
   return sms ;
 }
 
@@ -70,6 +71,7 @@ void syncmerSetDestroy (SyncmerSet *sms)
   arrayDestroy (sms->count) ;
   arrayDestroy (sms->thisCount) ;
   arrayDestroy (sms->maxCount) ;
+  arrayDestroy (sms->loc) ;
   newFree (sms, 1, SyncmerSet) ;
 }
 
@@ -105,7 +107,12 @@ bool syncmerSetWrite (SyncmerSet *sms, OneFile *of)
   while (total > chunk) { oneWriteLine (of, 'M', chunk, mc) ; mc += chunk ; total -= chunk ; }
   if (total) oneWriteLine (of, 'M', total, mc) ;
 
-  fprintf (stdout, "wrote %llu syncmers to file %s\n", kmerHashMax(sms->kh), oneFileName(of)) ;
+  I64 *locs = arrp (sms->loc, 0, I64) ;            // write locations
+  total = kh->max ;
+  while (total > chunk) { oneWriteLine (of, 'L', chunk, locs) ; locs += chunk ; total -= chunk ; }
+  if (total) oneWriteLine (of, 'L', total, locs) ;
+
+  fprintf (stdout, "wrote %'llu syncmers to file %s\n", kmerHashMax(sms->kh), oneFileName(of)) ;
   timeUpdate (stdout) ;
   return true ;
 }
@@ -160,11 +167,24 @@ SyncmerSet *syncmerSetRead (char *filename)
   if (n != kh->max) die ("wrong number of M counts %llx read for syncmerset %s size %llx",
 			 n, filename, kh->max) ;
 
+  // optionally read locations
+  if (of->lineType == 'L')
+    { array (sms->loc, kh->max, I64) = 0 ;
+      n = 0 ;
+      while (of->lineType == 'L')
+	{ memcpy (arrp(sms->loc, n, I64), oneIntList(of), oneLen(of)*sizeof(I64)) ;
+	  n += oneLen(of) ;
+	  oneReadLine(of) ;
+	}
+      if (n != kh->max) die ("wrong number of L locs %llx read for syncmerset %s size %llx",
+			     n, filename, kh->max) ;
+    }
+
   oneFileClose (of) ; // close the old file
 
   U64 i, totCount = 0 ;
   for (i = 1 ; i <= kmerHashMax(kh) ; ++i) totCount += arr(sms->count,i,I64) ;
-  fprintf (stdout, "read %llu syncmers from %s with total count %llu\n",
+  fprintf (stdout, "read %'llu syncmers from %s with total count %'llu\n",
 	   kmerHashMax(kh), filename, totCount) ;
 
   timeUpdate (stdout) ;
