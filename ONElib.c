@@ -7,7 +7,7 @@
  *  Copyright (C) Richard Durbin, Cambridge University and Eugene Myers 2019-
  *
  * HISTORY:
- * Last edited: Jan 11 13:33 2026 (rd109)
+ * Last edited: Mar 24 14:53 2026 (rd109)
  * * Oct  2 09:30 2025 (rd109): add localPath in OpenRead to try <path>.1<type> if <path> fails
  * * May  1 00:23 2024 (rd109): moved to OneInfo->index and multiple objects/groups
  * * Apr 16 18:59 2024 (rd109): major change to object and group indexing: 0 is start of data
@@ -736,7 +736,7 @@ static void oneFileDestroy (OneFile *vf)
 static void parseDie (OneFile *vf, char *format, ...)
 { va_list args;
 
-  fprintf (stderr, "OneFile parse error: ");
+  fprintf (stderr, "OneFile %s parse error: ", vf->fileName);
 
   va_start (args, format);
   vfprintf (stderr, format, args);
@@ -1103,7 +1103,7 @@ char oneReadLine (OneFile *vf)
 
   li = vf->info[(int) t];
   if (li == NULL)
-    parseDie (vf, "unknown line type %c (%d was %d) line %d", t, t, x, (int)vf->line);
+    parseDie (vf, "unknown line type %c (%d was %d)", t, t, x);
   if (li->accum.count >= 0) // after goto set to -1 for unindexed linetypes - can't know the count
     li->accum.count += 1 ;  // includes update of indexed type counts
 
