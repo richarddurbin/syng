@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 12 09:01 2026 (rd109)
+ * Last edited: Mar 24 17:29 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -51,12 +51,12 @@ int main (int argc, char *argv[])
 
   // process the syncmer hash info line, if there is one
   int syncLen = 63 ; // default
-  if (oneGoto (ofIn, 'h', 1))
-    { oneReadLine (ofIn) ;
-      I64 kSync = oneInt(ofIn,0), wSync = oneInt(ofIn,1), seed = oneInt(ofIn,2) ;
+  if (oneReadLine (ofIn) && ofIn->lineType == 'h') 
+    { I64 kSync = oneInt(ofIn,0), wSync = oneInt(ofIn,1), seed = oneInt(ofIn,2) ;
       oneInt(ofOut,0) = kSync ; oneInt(ofOut,1) = wSync ; oneInt(ofOut,2) = seed ;
       oneWriteLine (ofOut, 'h', 0, 0) ;
       syncLen = kSync + wSync ;
+      printf ("read h line k %lld w %lld len %d\n", kSync, wSync, syncLen) ;
     }
 
   // now process the paths
