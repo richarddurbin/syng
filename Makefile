@@ -61,7 +61,7 @@ syng: syng.c syngbwt3.o rskip.o syncmerset.o seqio.o seqhash.o kmerhash.o ONElib
 syngpath2gbwt: syngpath2gbwt.c syngbwt3.o rskip.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
-syngmap: syngmap.c syngbwt3.o rskip.o seqio.o seqhash.o kmerhash.o ONElib.o $(UTILS_OBJS)
+syngmap: syngmap.c syngbwt3.o rskip.o syncmerset.o seqhash.o kmerhash.o seqio.o ONElib.o $(UTILS_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread $(SEQIO_LIBS)
 
 syngstat: syngstat.c syngbwt3.o rskip.o ONElib.o $(UTILS_OBJS)
