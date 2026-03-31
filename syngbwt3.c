@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 16 09:14 2026 (rd109)
+ * Last edited: Mar 24 21:55 2026 (rd109)
  * * Nov 23 01:15 2025 (rd109): converted to skipList (balanced tree)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
@@ -37,6 +37,81 @@ typedef struct {
 #define NODE_SIMPLE_OUT  0x04
 #define NODE_SIMPLE      0x07
 
+/***************** private interval structure for loc lookup ******************/
+
+#define SYNGBWT_NBINS 4096
+
+typedef struct {
+  I64  nPath ;
+  U64  totLen ;
+  U64 *start ;   // [nPath+1]: start[i] = cumulative bp start of path i
+  I32 *bin ;     // [SYNGBWT_NBINS+1]: bin[b] = last path index with start[] <= b*totLen/SYNGBWT_NBINS
+} SyngBWTloc ;
+
+static SyngBWTloc *syngBWTlocCreate (Array paths) // of SyngPath
+{
+  SyngBWTloc *sl = new0 (1, SyngBWTloc) ;
+  sl->nPath = arrayMax (paths) ;
+  sl->start = new (sl->nPath + 1, U64) ;
+  U64 pos = 0 ;
+  for (int i = 0 ; i < sl->nPath ; ++i)
+    { sl->start[i] = pos ; pos += arrp(paths, i, SyngPath)->length ; }
+  sl->start[sl->nPath] = pos ;
+  sl->totLen = pos ;
+
+  sl->bin = new (SYNGBWT_NBINS + 1, I32) ;
+  if (sl->totLen)
+    { I32 i = 0 ;
+      for (int b = 0 ; b <= SYNGBWT_NBINS ; ++b)
+	{ U64 target = (U64)b * sl->totLen / SYNGBWT_NBINS ;
+	  while (i + 1 < sl->nPath && sl->start[i+1] <= target) ++i ;
+	  sl->bin[b] = i ;
+	}
+    }
+  return sl ;
+}
+
+static void syngBWTlocDestroy (SyngBWTloc *sl)
+{
+  newFree (sl->start, sl->nPath + 1, U64) ;
+  newFree (sl->bin, SYNGBWT_NBINS + 1, I32) ;
+  newFree (sl, 1, SyngBWTloc) ;
+}
+
+static void syngBWTlocBuild (SyngBWT *sb)
+{ if (sb->loc) syngBWTlocDestroy ((SyngBWTloc *) sb->loc) ;
+  sb->loc = syngBWTlocCreate (sb->path) ;
+}
+
+bool syngBWTlocFind (SyngBWT *sb, I64 loc, I64 *file, I64 *path, I64 *offset)
+{
+  SyngBWTloc *sl = (SyngBWTloc *) sb->loc ;
+  if (!sl || !sl->totLen) return false ;
+  bool isReverse = (loc < 0) ;
+  U64 aLoc = isReverse ? (U64)(-loc) : (U64)loc ;
+  if (aLoc >= sl->totLen) return false ;
+
+  int b  = (int)(aLoc * SYNGBWT_NBINS / sl->totLen) ;
+  int lo = sl->bin[b], hi = sl->bin[b+1] ;
+  int i ;
+  if (hi - lo <= 4)
+    { i = lo ; while (i < hi && sl->start[i+1] <= aLoc) ++i ; }
+  else
+    { while (lo < hi)
+	{ int mid = (lo + hi + 1) / 2 ;
+	  if (sl->start[mid] <= aLoc) lo = mid ; else hi = mid - 1 ;
+	}
+      i = lo ;
+    }
+
+  SyngPath *sp = arrp (sb->path, i, SyngPath) ;
+  *file   = sp->file ;
+  *path   = sp->path ;
+  *offset = (I64)(aLoc - sl->start[i]) ;
+  if (isReverse) *offset = -*offset ;
+  return true ;
+}
+
 /*********************** create and destroy ****************************/
 
 SyngBWT *syngBWTcreate (int fixedLen, I64 max)
@@ -47,6 +122,7 @@ SyngBWT *syngBWTcreate (int fixedLen, I64 max)
   if (!max) max = 1 << 20 ;
   sb->node = arrayCreate (max, Node) ;
   sb->status = arrayCreate (max, U8) ;
+  sb->path = arrayCreate (2048, SyngPath) ;
   return sb ;
 }
 
@@ -59,6 +135,8 @@ void syngBWTdestroy (SyngBWT *sb)
     }
   arrayDestroy (sb->node) ;
   arrayDestroy (sb->status) ;
+  if (sb->path) arrayDestroy (sb->path) ;
+  if (sb->loc) syngBWTlocDestroy ((SyngBWTloc *) sb->loc) ;
   if (sb->length) arrayDestroy (sb->length) ;
   if (sb->startHash) hashDestroy (sb->startHash) ;
   if (sb->startHashCount) arrayDestroy (sb->startHashCount) ;
@@ -512,7 +590,8 @@ void rsWrite (Rskip rs, OneFile *of, char eChar, char bChar, char cChar)
 
 
 void syngBWTwrite (OneFile *of, SyngBWT *sb)
-{
+{ // NB: P lines (path records) are written upstream by the caller before this function
+  // is invoked, since paths are processed serially prior to BWT construction.
   for (int i = 1 ; i < arrayMax(sb->node) ; ++i)
     { Node n = arr(sb->node, i, Node) ;
       U8   s = arr(sb->status, i, U8) ;
@@ -624,6 +703,18 @@ SyngBWT *syngBWTread (OneFile *of)
   SyngBWT *sb = syngBWTcreate (fixedLen, nv+1) ;
   if (!sb) die ("failed to create syngBWT of size %lld", nv+1) ;
 
+  // read path records (written upstream before BWT vertices; see syngBWTwrite comment)
+  I64 np ;
+  if (oneStats (of, 'P', &np, 0, 0) && np && oneGoto (of, 'P', 1))
+    while (oneReadLine (of) && of->lineType != 'V')
+      if (of->lineType == 'P')
+	{ SyngPath *sp = arrayp (sb->path, arrayMax(sb->path), SyngPath) ;
+	  sp->length = oneInt(of,0) ;
+	  sp->file   = oneInt(of,1) ;
+	  sp->path   = oneInt(of,2) ;
+	}
+  syngBWTlocBuild (sb) ;
+
   int         nThread = of->share ; if (!nThread) nThread = 1 ;
   pthread_t  *threads = new (nThread, pthread_t) ;
   ReadThread *rt = new0 (nThread, ReadThread) ;
@@ -638,7 +729,7 @@ SyngBWT *syngBWTread (OneFile *of)
     { pthread_join (threads[i], 0) ; // wait for the threads to complete
       eTotal += rt[i].eTotal ;
     }
-  printf ("read GBWT with %lld vertices and %lld edges from %s\n", nv, eTotal, oneFileName(of)) ;
+  printf ("read GBWT with %'lld vertices and %'lld edges from %s\n", nv, eTotal, oneFileName(of)) ;
 
   arrayMax (sb->node) = nv+1 ; // need to set these because we filled with arrp() for thread safety
   arrayMax (sb->status) = nv+1 ;
