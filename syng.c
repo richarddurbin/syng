@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 19 14:08 2026 (rd109)
+ * Last edited: Mar 26 14:14 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -40,6 +40,7 @@ typedef struct {
   I64       nSync ;	// number of syncs
   I32       iSource ;   // ordinal of original source file = sequence set, typically genome
   I32       inSource ;  // position of sequence in original file
+  char     *name ;      // sequence name (is isName)
 } SeqInfo ;
 
 typedef struct {
@@ -283,6 +284,8 @@ static char usage[] =
   "  -readK <.1khash file>  : read and start from this syncmer (khash) file\n"
   "  -zeroK                 : zero the kmer counts\n"
   "  -noAddK                : do not create new syncmers - convert unmatched syncmers to 0\n"
+  "  -noNames               : do not add names to path/gbwt file - option for read sets\n"
+  "  -noEnds                : do not output non-syncmer ends (reverse of -outputEnds)\n"
   //  "  -limitK <min> <max>    : filter current kmer set based on counts ; max 0 to have no upper bound\n"
   "  -histK                 : output quadratic histogram of kmer counts (after sequence processsing)\n"
   "  -writeK                : write the syncmers as a .1khash file\n"
@@ -291,8 +294,7 @@ static char usage[] =
   "  -writePath             : write a .1path file (paths of nodes)\n"
   "  -writeGBWT             : write a .1gbwt file (nodes, edges and paths in GBWT form)\n"
   "  -writeSeq              : write a .1seq file (paths converted back to sequences)\n"
-  "  -outputEnds            : write the non-syncmer ends of path sequences as X,Y lines\n"
-  //  "  -outputNames           : write the names of path sequences as I lines\n"
+  "  -outputEnds            : write the non-syncmer ends of path sequences as X,Y lines - now default\n"
   "possible inputs are:\n"
   "  <sequence file>        : any of fasta[.gz], fastq[.gz], BAM/CRAM/SAM, .1seq\n"
   "  <.1path file>          : sequences as lists of kmers, with optional non-syncmer DNA ends\n"
@@ -313,8 +315,8 @@ int main (int argc, char *argv[])
   OneFile    *ofK = 0, *ofNewK = 0, *ofOut = 0 ;
   SyngBWT    *gbwtOut = 0 ;
   SyncmerParams params = syncmerParamsDefault () ;
-  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = false ;
-  bool        isSort = false ;
+  bool        isAddSyncmers = true, isHistK = false, isOutputEnds = true ;
+  bool        isNames = true ;
   I64         i, j, k ; // general purpose indices
   
   timeUpdate (0) ;
@@ -322,6 +324,7 @@ int main (int argc, char *argv[])
   schema = oneSchemaCreateFromText (syngSchemaText) ;
 
   U64 nSeq = 0, totSeq = 0, totSync = 0 ;
+  I64 seqLoc = 0 ;
   
   storeCommandLine (argc, argv) ;
   argc-- ; ++argv ;
@@ -359,8 +362,10 @@ int main (int argc, char *argv[])
 	sms = sms2 ;
 	argc -= 3 ; argv += 3 ;
       }
-    else if (!strcmp (*argv, "-histK")) { isHistK = true ; argc-- ; argv++ ; }
-    else if (!strcmp (*argv, "-noAddK"))   { isAddSyncmers = false ; argc-- ; argv++ ; }
+    else if (!strcmp (*argv, "-histK"))   { isHistK = true ; argc-- ; argv++ ; }
+    else if (!strcmp (*argv, "-noAddK"))  { isAddSyncmers = false ; argc-- ; argv++ ; }
+    else if (!strcmp (*argv, "-noNames")) { isNames = false ; argc-- ; argv++ ; }
+    else if (!strcmp (*argv, "-noEnds"))  { isOutputEnds = false ; argc-- ; argv++ ; }
     else if (!strcmp (*argv, "-o") && argc > 1) { outPrefix = argv[1] ; argc -= 2 ; argv += 2 ; }
     else if (!strcmp (*argv, "-writeK"))
       { char *fname = fnameTag (outPrefix,"1khash") ;
@@ -420,8 +425,6 @@ int main (int argc, char *argv[])
       newFree (s, sms->kh->len, char) ;
     }
 
-  if (ofOut) oneAddProvenance (ofOut, "syng", SYNG_VERSION, getCommandLine()) ;
-
   int maxSources ; // collect sources from remaining files
   char **sources = collectSources (argc, argv, &maxSources) ;
   if (sources)
@@ -429,6 +432,11 @@ int main (int argc, char *argv[])
       if (ofOut) addSourceReferences (ofOut, sources) ;
       char **s = sources ; while (*s) { free (*s) ; ++s ; } // use free() because created with strdup
       newFree (sources, maxSources, char*) ;
+    }
+
+  if (ofOut)
+    { oneAddProvenance (ofOut, "syng", SYNG_VERSION, getCommandLine()) ;
+      syncmerParamsWrite (ofOut, params) ;
     }
   
   U64 nSeq0 = 0, totSeq0 = 0, totSync0 = totSync, syncMax0 = kmerHashMax(sms->kh), nNew = 0 ;
@@ -454,7 +462,7 @@ int main (int argc, char *argv[])
       if (ofIn && oneStats (ofIn, 'P', &nPath, 0, 0) && nPath) // a path file 
 	{ if (!sms->kh->max) die ("%s is a path file but we have no kmers", *argv) ;
 	  fprintf (stdout, "path file %d %s: ", nFile, *argv) ;
-	  oneReadLine (ofIn) ; if (ofIn->lineType == 'h') syncmerParamsCheck (ofIn, params) ;
+	  if (oneGoto (ofIn, 'h', 1)) { oneReadLine (ofIn) ; syncmerParamsCheck (ofIn, params) ; }
 	  I64 z ;
 	  if (oneStats (ofIn, 'Z', &z, 0, 0) && z) // must have a GBWT
 	    threadInfo->sbwt = syngBWTread (ofIn) ;
@@ -504,10 +512,24 @@ int main (int argc, char *argv[])
 		  for (j = 0 ; j < arrayMax(ti->seqInfo) ; ++j)
 		    { for (k = 0 ; k < arrp(ti->seqInfo, j, SeqInfo)->nSync ; ++k, ++sp)
 			if (sp->sync) // increment sms->count, because FindThreadSafe could not
-			  syncmerCount (sms, sp->sync) ;
+			  { syncmerCountIncrement (sms, sp->sync) ;
+			    // reservoir sampling for loc: update with prob 1/count
+			    // rand() is fine here - speed matters more than pseudorandom quality
+			    I64 absSync = sp->sync < 0 ? -sp->sync : sp->sync ;
+			    if (!(rand() % arr(sms->count, absSync, I64)))
+			      { I64 locVal = seqLoc + sp->pos ;
+				arr(sms->loc, absSync, I64) = sp->sync > 0 ? locVal : -locVal ;
+			      }
+			  }
 			else if (isAddSyncmers)
 			  { I64 sync ;
 			    syncmerAdd (sms, seq + sp->pos, &sync) ;
+			    // reservoir sampling for loc: prob 1/count (always 1 for new syncmers)
+			    I64 absSync = sync < 0 ? -sync : sync ;
+			    if (!(rand() % arr(sms->count, absSync, I64)))
+			      { I64 locVal = seqLoc + sp->pos ;
+				array(sms->loc, absSync, I64) = sync > 0 ? locVal : -locVal ;
+			      }
 			    sp->sync = sync ;
 #ifdef ADD_DEBUG
 			    static int N = 10 ;
@@ -519,7 +541,8 @@ int main (int argc, char *argv[])
 			  }
 			else if (smsNew)
 			  syncmerAdd (smsNew, seq + sp->pos, 0) ;
-		      seq += arrp(ti->seqInfo, j, SeqInfo)->len ;
+		      seqLoc += arrp(ti->seqInfo, j, SeqInfo)->len ;
+		      seq    += arrp(ti->seqInfo, j, SeqInfo)->len ;
 		    } // read
 		} // thread i
 	      if (isDone) syncmerUpdateMaxCount (sms) ;
@@ -539,19 +562,22 @@ int main (int argc, char *argv[])
 	      char *seq = arrp(ti->seq, 0, char) ;
 	      SyncPos *sp = arrp(ti->syncPos, 0, SyncPos) ;
 	      for (j = 0 ; j < arrayMax (ti->seqInfo) ; ++j, ++nSeq)
-		{ totSync += arrp(ti->seqInfo, j, SeqInfo)->nSync ;
+		{ SeqInfo *si = arrp(ti->seqInfo, j, SeqInfo) ;
+		  totSync += si->nSync ;
 		  ++pathCount ; // global path counter
 		  // printf ("path %d\n", pathCount) ;
-		  if (outType == SEQ)
-		    oneWriteLine (ofOut, 'S', arrp(ti->seqInfo, j, SeqInfo)->len, seq) ;
+		  if (outType == SEQ) oneWriteLine (ofOut, 'S', si->len, seq) ;
 		  else if (outType == PATH || outType == GBWT)
-		    { I64 nSync = arrp(ti->seqInfo, j, SeqInfo)->nSync ; // number of syncs
-		      if (arrp(ti->seqInfo, j, SeqInfo)->inSource == 1)
-			{ ++nSource ; nSeq0 = nSeq ; }
-		      oneInt(ofOut, 0) = arrp(ti->seqInfo, j, SeqInfo)->len ;
+		    { I64 nSync = si->nSync ; // number of syncs
+		      if (si->inSource == 1) { ++nSource ; nSeq0 = nSeq ; }
+		      oneInt(ofOut, 0) = si->len ;
 		      oneInt(ofOut, 1) = nSource ; // first write the path number
 		      oneInt(ofOut, 2) = nSeq-nSeq0+1 ;
 		      oneWriteLine (ofOut, 'P', 0, 0) ;
+		      if (si->name)
+			{ if (isNames) oneWriteLine (ofOut, 'I', strlen(si->name), si->name) ;
+			  free (si->name) ; // free because used strdup() here
+			}
 		      if (nSync && outType == GBWT) // add paths to the GBWT and write the start nodes
 			{ SyngBWTpath *sbp = syngBWTpathStartNew (gbwtOut, sp->sync) ;
 			  U32 j0 = sbp->jLast ; // used in PATH_CHECK
@@ -599,7 +625,7 @@ int main (int argc, char *argv[])
 			  oneWriteLine (ofOut, 'o', nSync, x) ;
 			}
 		      if (isOutputEnds)
-			{ I64 len = arrp(ti->seqInfo,j,SeqInfo)->len ;
+			{ I64 len = si->len ;
 			  if (nSync)
 			    { oneWriteLine (ofOut, 'X', sp->pos, seq) ;
 			      I64 endOff = sp[nSync-1].pos + sms->kh->len ;
@@ -612,7 +638,7 @@ int main (int argc, char *argv[])
 			}
 		      sp += nSync ;
 		    } // PATH or GBWT
-		  seq +=  arrp(ti->seqInfo, j, SeqInfo)->len ;
+		  seq +=  si->len ;
 		} // j sequences
 	    } // i threads
 	} // isDone: end of file
