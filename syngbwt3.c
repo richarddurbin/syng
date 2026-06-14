@@ -5,7 +5,7 @@
  * Description:
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 24 21:55 2026 (rd109)
+ * Last edited: Jun 14 10:09 2026 (rd109)
  * * Nov 23 01:15 2025 (rd109): converted to skipList (balanced tree)
  * Created: Mon Sep  9 11:34:51 2024 (rd109)
  *-------------------------------------------------------------------
@@ -675,13 +675,21 @@ static void *threadRead (void *arg)
 	      n->in.sync = inSync[0] ; n->in.offset = inOffset[0] ; n->in.count = inSum[0] ;
 	    }
 	  else
+#ifdef RSKIP_SEARCH_COUNT
+	    n->in.rs = rsBuildDynamicSyng (inN, inSync, inOffset, inNrun, inSym, inRunLen) ;
+#else
 	    n->in.rs = rsBuildFixedSyng (inN, inSync, inOffset, inNrun, inSym, inRunLen) ;
+#endif
 	  if (outN == 1)
 	    { *s |= NODE_SIMPLE_OUT ;
 	      n->out.sync = outSync[0] ; n->out.offset = outOffset[0] ; n->out.count = outSum[0] ;
 	    }
 	  else
+#ifdef RSKIP_SEARCH_COUNT
+	    n->out.rs = rsBuildDynamicSyng (outN, outSync, outOffset, outNrun, outSym, outRunLen) ;
+#else
 	    n->out.rs = rsBuildFixedSyng (outN, outSync, outOffset, outNrun, outSym, outRunLen) ;
+#endif
 	}
       if (DEBUG) nodeCheck (n, *s) ;
     }
