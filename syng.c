@@ -5,7 +5,7 @@
  * Description: syncmer-based graph assembler
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 26 14:14 2026 (rd109)
+ * Last edited: May 26 23:35 2026 (rd109)
  * Created: Thu May 18 11:57:13 2023 (rd109)
  *-------------------------------------------------------------------
  */
@@ -195,15 +195,6 @@ static int kmerOrder (const void *a, const void *b)
 
 /*****************************************************/
 
-static bool oneFileTest (char* fname)
-{
-  FILE *f ;
-  if (!(f = fopen (fname, "r"))) return false ;
-  char peek = getc (f) ;
-  fclose (f) ;
-  return (peek == '1') ;
-}
-
 static inline char **doubleSources (char **sources, int *maxSources)
 {
   char **x = new0 (*maxSources*2, char*) ;
@@ -216,23 +207,47 @@ static inline char **doubleSources (char **sources, int *maxSources)
 static char **collectSources (int argc, char *argv[], int *maxSources)
 {
   OneFile *of ;
-  int  i, nSources = 0 ;
+  SeqIO   *sio ;
+  int     i, nSources = 0 ;
   *maxSources = 32 ;
   char **sources = new0 (*maxSources, char*) ;
-  while (argc--)
-    { if (oneFileTest (*argv) && (of = oneFileOpenRead (*argv, 0, 0, 1)))
+  I64  nPath ;
+  FILE *fofn = 0 ;
+  char nameBuf[4096], *fname ;
+  while (fofn || argc--)
+    { if (fofn)
+	{ if (!fscanf (fofn, "%4095s\n", nameBuf)) die ("filename not found in %s", argv[-1]) ;
+	  if (strlen (nameBuf) > 4094)
+	    die ("name in file of filenames %s too long: %s", argv[-1], nameBuf) ;
+	  fname = nameBuf ;
+	  if (feof(fofn)) { fclose (fofn) ; fofn = 0 ; }
+	}
+      else
+	fname = *argv++ ;
+      of = oneFileOpenRead (fname, 0, 0, 1) ;
+      if (of && oneStats (of, 'P', &nPath, 0, 0) && nPath)
 	{ while (nSources + oneReferenceCount(of) >= *maxSources)
 	    sources = doubleSources (sources, maxSources) ;
 	  for (i = 0 ; i < oneReferenceCount(of) ; ++i)
 	    sources[nSources++] = strdup (of->reference[i].filename) ;
-	  oneFileClose (of) ;
 	}
       else
-	{ if (nSources + 1 >= *maxSources)
-	    sources = doubleSources (sources, maxSources) ;
-	  sources[nSources++] = strdup (*argv) ;
+	{ if (of) { oneFileClose (of) ; of = 0 ; }
+	  if ((sio = seqIOopenRead (fname, dna2index4Conv, 0)))
+	    { if (nSources + 1 >= *maxSources)
+		sources = doubleSources (sources, maxSources) ;
+	      sources[nSources++] = strdup (fname) ;
+	      seqIOclose (sio) ;
+	    }
+	  else if (!fofn)
+	    { if (!(fofn = fopen (fname, "r")))
+		die ("can't open %s as a file of filenames", fname) ;
+	      fprintf (stdout, "file of filenames %s\n", fname) ;
+	      continue ;
+	    }
 	}
-      ++argv ;
+      if (!of && !sio) 	die ("failed to open %s as sequence file or path file", fname) ;
+      if (of) oneFileClose (of) ;
     }
   return sources ;
 }
@@ -299,6 +314,7 @@ static char usage[] =
   "  <sequence file>        : any of fasta[.gz], fastq[.gz], BAM/CRAM/SAM, .1seq\n"
   "  <.1path file>          : sequences as lists of kmers, with optional non-syncmer DNA ends\n"
   "  <.1gbwt file>          : graph BWT with paths, with optional ends\n"
+  "  <fofn>                 : a file containing paths of any number of the above, one per line\n"
   "Operations are carried out in order as they are parsed, with some setting up future actions,\n"
   "e.g. changing the outfile prefix affects following lower case options for file opening\n"
   "Some output files, e.g. .1gbwt will be output at the end, after all inputs are processed,\n"
@@ -454,14 +470,24 @@ int main (int argc, char *argv[])
 
   int nFile = 0 ;
   int nSource = 0 ;
-  while (argc--)
-    { ++nFile ;
-      OneFile *ofIn = oneFileOpenRead (*argv, schema, 0, nThread) ;
+  FILE *fofn = 0 ;
+  char nameBuf[4096], *fname ;
+  while (fofn || argc--)
+    { if (fofn)
+	{ if (!fscanf (fofn, "%4095s\n", nameBuf)) die ("filename not found in %s", argv[-1]) ;
+	  fname = nameBuf ;
+	  if (feof(fofn)) { fclose (fofn) ; fofn = 0 ; }
+	}
+      else
+	fname = *argv++ ;
+      ++nFile ;
+      // first try to see if it is a .1file containing paths
+      OneFile *ofIn = oneFileOpenRead (fname, schema, 0, nThread) ;
       SeqIO   *sio = 0 ;
       I64      nPath ;
       if (ofIn && oneStats (ofIn, 'P', &nPath, 0, 0) && nPath) // a path file 
-	{ if (!sms->kh->max) die ("%s is a path file but we have no kmers", *argv) ;
-	  fprintf (stdout, "path file %d %s: ", nFile, *argv) ;
+	{ if (!sms->kh->max) die ("%s is a path file but we have no kmers", fname) ;
+	  fprintf (stdout, "path file %d %s: ", nFile, fname) ;
 	  if (oneGoto (ofIn, 'h', 1)) { oneReadLine (ofIn) ; syncmerParamsCheck (ofIn, params) ; }
 	  I64 z ;
 	  if (oneStats (ofIn, 'Z', &z, 0, 0) && z) // must have a GBWT
@@ -475,13 +501,19 @@ int main (int argc, char *argv[])
 	}
       else
 	{ if (ofIn) { oneFileClose (ofIn) ; ofIn = 0 ; }
-	  sio = seqIOopenRead (*argv, dna2index4Conv, 0) ;
-	  if (!sio) die ("failed to open sequence file %s", *argv) ;
-	  ++nSource ; // each input sequence file is a source
-	  fprintf (stdout, "sequence file %d %s type %s: ", nSource, *argv, seqIOtypeName[sio->type]) ;
+	  if ((sio = seqIOopenRead (fname, dna2index4Conv, 0)))
+	    { ++nSource ; // each input sequence file is a source
+	      fprintf (stdout, "sequence file %d %s type %s: ",
+		       nSource, fname, seqIOtypeName[sio->type]) ;
+	    }
+	  else if (!fofn)
+	    { if (!(fofn = fopen (fname, "r")))
+		die ("can't open %s as a file of filenames", fname) ;
+	      fprintf (stdout, "file of filenames %s\n", fname) ;
+	      continue ;
+	    }	      
 	}
-      if (!ofIn && !sio)
-	die ("failed to open sequence or path file %s", *argv) ;
+      if (!ofIn && !sio) die ("failed to open %s as sequence file or path file", fname) ;
       fflush (stdout) ;
       bool isDone = false ;
       while (!isDone) // read this file
@@ -658,7 +690,6 @@ int main (int argc, char *argv[])
       timeUpdate (stdout) ;
 
       nSeq0 = nSeq ; totSeq0 = totSeq ; totSync0 = totSync ; syncMax0 = kmerHashMax(sms->kh) ;
-      ++argv ;
     } // source file
 
   fprintf (stdout, "Total for this run %llu sequences, total length %llu\n", nSeq, totSeq) ;
