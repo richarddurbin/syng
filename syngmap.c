@@ -5,7 +5,7 @@
  * Description: maps sequences to a <syng>.1gbwt with its <syng>.1khash
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 24 21:53 2026 (rd109)
+ * Last edited: Jun 14 18:37 2026 (rd109)
  * Created: Mon Dec  2 16:18:27 2024 (rd109)
  *-------------------------------------------------------------------
  */
@@ -16,6 +16,12 @@
 extern int pathCount ;
 
 static const int DEBUG = 0 ;
+
+#ifdef RSKIP_SEARCH_COUNT // for counting O(S) operations for paper
+extern U64 rskipSearchNoneTotal, rskipSearchSomeTotal, rskipSearchCountTotal ;
+extern U64 rskipSearchNone[1024], rskipSearchSome[1024], rskipSearchCount[1024] ;
+#endif
+
 
 /****************************************************/
 
@@ -166,10 +172,13 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 			  // printf ("      restart at pos %d\n", firstPos) ;
 			  low = 0 ; sbp = syngBWTmatchStart (ti->gbwt, arr(syncStack,k,I32), &high) ;
 			  while (++k < arrayMax(syncStack))
-			    if (!syngBWTmatchNext (sbp, arr(syncStack,k,I32),
-						   arr(posStack,k,int)-arr(posStack,k-1,int),
-						   &low, &high))
-			      die ("error reverting in memfinding") ;
+			    { // printf ("        reverting k %d sync %d offset %d\n", k, arr(syncStack,k,I32), arr(posStack,k,int)-arr(posStack,k-1,int)) ;
+			      if (!syngBWTmatchNext (sbp, arr(syncStack,k,I32),
+						     arr(posStack,k,int)-arr(posStack,k-1,int),
+						     &low, &high))
+				die ("error reverting in memfinding, k %d max %llu",
+				     k, arrayMax(syncStack)) ;
+			    }
 			}
 		      // else printf ("    match: low %u high %u\n", low, high) ;
 		    }
@@ -182,7 +191,7 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 		    { syngBWTpathDestroy (sbp) ;
 		      writeMem (ti, firstPos, lastPos, high-low) ;
 		      if (uniqueSync)
-		{ writeLoc (ti, uniqueSync, uniquePos, firstPos) ; uniqueSync = 0 ; }
+			{ writeLoc (ti, uniqueSync, uniquePos, firstPos) ; uniqueSync = 0 ; }
 		      sbp = 0 ; low = 0 ;
 		      arrayMax(syncStack) = 0 ; // restart the syncStack
 		      arrayMax(posStack)  = 0 ; // and the posStack
@@ -216,7 +225,6 @@ static char *usage =
   "possible options are:\n"
   "  -T <threads>           : [8] number of threads\n"
   "  -o <outfile prefix>    : default is syngmap, file type is .1map\n"
-  "  -writeNewK <file prefix> : write new syncmers as a .1khash file; implies -N\n"
   "  -outputIds             : write the identifiers of query sequences as I lines\n"
   "  -filterG <nG>          : remove input sequences with runs of >nG consecutive Gs (bad Illumina reads)\n"
   "  -filterQ <QT>          : remove input sequences with average quality score below QT\n"
@@ -242,6 +250,7 @@ int main (int argc, char *argv[])
     else if (!strcmp (*argv, "-filterQ") && argc > 1)
       { filterQ = atoi(argv[1]) ; argc -= 2 ; argv += 2 ; }
     else if (!strcmp (*argv, "-filterIllumina")) { filterG = 60 ; filterQ = 20 ; --argc ; ++argv ; }
+  //    else if (!strcmp (*argv, "-writeNewK"))
     else die ("unknown parameter %s\n%s", *argv, usage) ;
 
   if (argc != 3) die ("missing the three required arguments\n%s", usage) ;
@@ -278,6 +287,10 @@ int main (int argc, char *argv[])
   int i, j ; // general index variables
 
   if (DEBUG) nThread = 1 ;
+#ifdef RSKIP_SEARCH_COUNT
+  nThread = 1 ;
+  for (i = 0 ; i < 1024 ; ++i) rskipSearchNone[i] = rskipSearchSome[i] = rskipSearchCount[i] = 0 ;
+#endif
   
   // set up the threads
   if (nThread < 1) die ("number of threads %d must be at least 1", nThread) ;
@@ -351,6 +364,25 @@ int main (int argc, char *argv[])
       putchar ('\n') ;
       printf ("%'lld without matches\n", totNoMatch) ;
     }
+
+#ifdef RSKIP_SEARCH_COUNT // for counting O(S) operations for paper
+  U64 total = rskipSearchNoneTotal + rskipSearchSomeTotal ;
+  printf ("total non-trivial rank() on dynamic %llu", total) ;
+  printf (" of which %llu none and %llu some\n", rskipSearchNoneTotal, rskipSearchSomeTotal) ;
+  printf ("  search steps %llu", rskipSearchCountTotal) ;
+  if (total)
+    printf (" average %.2f", rskipSearchCountTotal / (double)total) ;
+  if (rskipSearchSomeTotal)
+    printf (" or if some %.2f", rskipSearchCountTotal / (double)rskipSearchSomeTotal) ;
+  printf ("\n") ;
+  for (i = 0 ; i < 1024 ; i++)
+    if (rskipSearchNone[i] || rskipSearchSome[i])
+      { printf ("  %4d  %8llu  %8llu", i, rskipSearchNone[i], rskipSearchSome[i]) ;
+	if (rskipSearchSome[i]) printf ("  %10llu %5.1f", rskipSearchCount[i],
+					rskipSearchCount[i] / (double) rskipSearchSome[i]) ;
+	printf ("\n") ;
+      }
+#endif
   
   oneFileClose (ofOut) ;
 
