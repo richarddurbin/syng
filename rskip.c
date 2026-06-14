@@ -5,7 +5,7 @@
  * Description: code for run-length encoded skip lists
  * Exported functions:
  * HISTORY:
- * Last edited: Mar 16 09:10 2026 (rd109)
+ * Last edited: Jun 14 18:42 2026 (rd109)
  * Created: Sun Nov 30 21:42:51 2025 (rd109)
  *-------------------------------------------------------------------
  */
@@ -104,6 +104,11 @@ static inline LinearSyngDir *linearSyngDir (Rskip rs) { return (LinearSyngDir*) 
 #define RSKIP_DEFINED
 
 #include "rskip.h" // for interface declarations
+
+#ifdef RSKIP_SEARCH_COUNT // for counting O(S) operations for paper
+U64 rskipSearchNoneTotal = 0, rskipSearchSomeTotal = 0, rskipSearchCountTotal = 0 ;
+U64 rskipSearchNone[1024], rskipSearchSome[1024], rskipSearchCount[1024] ;
+#endif
 
 /*************** first the error handling - a work in progress **************/
 
@@ -656,7 +661,7 @@ Rskip rsBuildFixedSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSym,
 // this is used when building from data stored in a .1gbwt OneFile
 {
   Rskip rs ; rs.linear = 0 ;
-  int size = linearSize (LINEAR_SYNG, nSym, nRun, runLen) ;
+  int   size = linearSize (LINEAR_SYNG, nSym, nRun, runLen) ;
   if (size <= MAX_LINEAR) // build in Linear nodes
     { rs = rsNew (LINEAR_SYNG, nSym, size) ; 
       if (fillLinearNodes (rs, nRun, iSym, runLen))
@@ -682,14 +687,22 @@ Rskip rsBuildDynamicSyng (int nSym, I32 *symbol, U32 *offset, int nRun, I64 *iSy
 // very similar to above, except expand to a power of 2 if Linear, and Dynamic not Fixed if not Linear
 {
   Rskip rs ;
-  int size = linearSize (LINEAR_SYNG, nSym, nRun, runLen) ;
+  int   size = linearSize (LINEAR_SYNG, nSym, nRun, runLen) ;
   if (size <= MAX_LINEAR) // build in Linear nodes
     { if (size & (size-1)) // not a power of 2
 	size = 1 + (size | (size >> 1) | (size >> 2) | (size >> 4)) ; // make a power of 2
       rs = rsNew (LINEAR_SYNG, nSym, size) ; 
       if (!fillLinearNodes (rs, nRun, iSym, runLen)) die ("screwup filling linear") ;
+#ifdef RSKIP_SEARCH_COUNT // need count to be set
+      int i ; U16 sum[nSym] ; for (i = 0 ; i < nSym ; ++i) sum[i] = 0 ;
+      for (i = 0 ; i < nRun ; ++i) sum[iSym[i]] += runLen[i] ; // need to fill count for Fixed
+      LinearSyngDir *lsd = linearSyngDir (rs) ;
+      for (i = 0 ; i < nSym ; ++i)
+	{ lsd[i].sym = *symbol++ ; lsd[i].offset = *offset++ ; lsd[i].count = sum[i] ; }
+#else
       for (LinearSyngDir *lsd = linearSyngDir (rs) ; nSym-- ; ++lsd)
 	{ lsd->sym = *symbol++ ; lsd->offset = *offset++ ; }
+#endif      
     }
   else
     { rs = buildDynamic (DYNAMIC, nSym, nRun, iSym, runLen) ;
@@ -823,8 +836,8 @@ static Rskip rebuildAddLinear (Rskip rs, int k, U32 kSym)
       rs = rsOut ;
     }
 
-  if (DEBUG && !rsCheck(rs))
-    die ("rsCheck failure debugAddLinear: callCount %d k %d kSym %d", callCount, k, kSym) ;
+  //  if (DEBUG && !rsCheck(rs))
+  //    die ("rsCheck failure debugAddLinear: callCount %d k %d kSym %d", callCount, k, kSym) ;
   
   return rs ;
 }
@@ -1029,7 +1042,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	}
       else
 	*rsp = rebuildAddLinear (rs, k, kSym) ; // need to expand/convert
-      if (DEBUG && !rsCheck (*rsp))
+      if (DEBUG == callCount && !rsCheck (*rsp))
 	die ("rsCheck failed after linear addDirect call %llu k %d kSym %d", callCount, k, kSym) ;
       return sSum ;
     }
@@ -1040,6 +1053,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
       if (callCount == DEBUG)
 	{ printf ("addDirect dynamic callCount %llu k %u kSym %u\n", callCount, k, kSym) ;
 	  rsPrint (rs) ;
+	  if (!rsCheck (rs)) warn ("rsCheck failed") ;
 	}
 
 #define I_NEED_THIS // though I think I should be able to remove it given changes elsewhere...
@@ -1117,7 +1131,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 			 iLeft, iRight, k - sum + node[iLeft].count, sum - k,
 			 iLeft, node[iLeft].sRight, k - sum + node[iLeft].count,
 			 node[iLeft].sCount - (k - sum + node[iLeft].count)) ;
-	      if (DEBUG && !rsCheck (rs))
+	      if (DEBUG == callCount && !rsCheck (rs))
 		die ("failed rsCheck after split addColumn: callCount %llu", callCount) ;
 	      iRight = node[iLeft].right ; // this is the bottom of the new column
 	      sum = k ; // by construction - NB will trigger next block via "if (sum == k)"
@@ -1163,8 +1177,8 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	      addColumn (rs, kSym, newDepth, k,
 			 iLeft, iRight, iLeft ? node[iLeft].count : 0, 0,
 			 isLeft, isRight, isLeft ? node[isLeft].sCount : 0, 0) ;
-	      	      if (DEBUG && !rsCheck (rs))
-	      		die ("failed rsCheck after insert addColumn: callCount %llu", callCount) ;
+	      if (DEBUG == callCount && !rsCheck (rs))
+		die ("failed rsCheck after insert addColumn: callCount %llu", callCount) ;
 	      // now reset iLeft and isLeft to the bottom of the new column
 	      isLeft = iLeft = iLeft ? node[iLeft].right : node[iRight].left ;
 	      // iRight = node[iLeft].right ; isRight = node[isLeft].sRight ; // should not change
@@ -1199,7 +1213,7 @@ static int addDirect (Rskip *rsp, U32 k, U32 kSym)
 	  if (isRight) { isRight = node[isRight].up ; if (isRight) ++node[isRight].sBefore ; }
 	}
       ++node[kSym+1].sum ; // update directory total
-      if (DEBUG && !rsCheck (rs))
+      if (DEBUG == callCount && !rsCheck (rs))
 	die ("failed rsCheck after increments: callCount %llu", callCount) ;
       return sSum ; // this is the only ultimate real return location for Dynamic
     }
@@ -1253,7 +1267,7 @@ int rsDirRankSyng (Rskip rs, I32 symbol, U32 offset)
 	if (node[i].sym == symbol && node[i].offset == offset) // found it
 	  return sum ;
 	else
-	  sum += node[i].count ;
+	  sum += node[i].sum ;
       die ("failed to find symbol %d offset %u in dynamic rskip", symbol, offset) ;
     }
   else 
@@ -1353,7 +1367,7 @@ U32 rsDirSum (Rskip rs)
     }
   else if (rsType(rs) == DYNAMIC)
     { Dynamic *node = rs.dynamic + 1 ;
-      for (int i = 0 ; i < rs.dynamic->nSym ; ++i) sum += node[i].count ;
+      for (int i = 0 ; i < rs.dynamic->nSym ; ++i) sum += node[i].sum ; // seems we need this
     }
   else if (rsType(rs) == FIXED_SYNG)
     { Fixed *node = rs.fixed + 1 ;
@@ -1486,7 +1500,8 @@ int rsCountSyng (Rskip rs, I32 symbol, U32 offset)
 static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not including) k
 {
   // static int callCount = 0 ; ++callCount ;
-  if (kSym == rsNsym(rs)) return 0 ; // new symbol
+  int nSym = rsNsym(rs) ;
+  if (kSym == nSym) return 0 ; // new symbol
   if (rs.linear->max) // linear
     { int     i, sum = 0, sSum = 0 ;
       Linear *node = rs.linear + rs.linear->max - 1 ;
@@ -1521,9 +1536,28 @@ static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not in
 	  else break ; // at bottom in correct node
 
       U32 sSum = 0 ;
-      if (node[i].iSym == kSym) sSum = k - sum ;
+      if (node[i].iSym == kSym)
+	{
+#ifdef RSKIP_SEARCH_COUNT
+	  ++rskipSearchNoneTotal ;
+	  if (nSym < 1024) ++rskipSearchNone[nSym] ;
+#endif
+	  sSum = k - sum ;
+	}
       else
-	{ for (i = node[i].left ; i && node[i].iSym != kSym ; i = node[i].left) { ; }
+	{
+#ifdef RSKIP_SEARCH_COUNT
+	  ++rskipSearchSomeTotal ;
+	  if (nSym < 1024) ++rskipSearchSome[nSym] ;
+#endif
+	  for (i = node[i].left ; i && node[i].iSym != kSym ; i = node[i].left) // O(S) search
+	    {
+#ifdef RSKIP_SEARCH_COUNT
+	      ++rskipSearchCountTotal ;
+	      if (nSym < 1024) ++rskipSearchCount[nSym] ;
+#endif
+	      ;
+	    }
 	  if (i) sSum = node[i].count ;
 	}
       while (i)
@@ -1533,7 +1567,8 @@ static int rank (Rskip rs, U32 k, int kSym)  // how many of symbol up to (not in
     }
   else // fixed - can follow the symbol sub-list, with care
     { Fixed *node = rs.fixed ;
-      U32 i = 1+kSym ; if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) i += rs.fixed->nSym ;
+      U32 i = 1+kSym ;
+      if (rsType(rs) == FIXED_SYNG || rsType(rs) == FIXED) i += rs.fixed->nSym ; // skip directory
       int sSumLast = 0 ;
       while (true) // LOGARITHMIC
         if (node[i].sum < k)
@@ -1814,7 +1849,7 @@ int main (int argc, char *argv[])
 	lens[callCount-1] = len ;
 	int kLen = 0 ; n = len ; while (n >>= 1) ++kLen ;
 
-	int nSym = 0 ; for (i = 0 ; i < nRuns ; ++i) if (B[i] > nSym) nSym = B[i] ; ++nSym ;
+	int nSym = 0 ; for (i = 0 ; i < nRuns ; ++i) if (B[i] >= nSym) nSym = B[i]+1 ;
 	if (nSym > MAX_SYM) die ("nSym %d > MAX_SYM %d", nSym, MAX_SYM) ;
 	
 	// now make the rs
@@ -1910,19 +1945,20 @@ int main (int argc, char *argv[])
 	if (isRank)
 	  { int expected = 0, sum = 0 ;
 	    int target = len/2 ;
+	    I32 sym = nSym/2 ;
 	    for (i = 0 ; i < nRuns ; ++i)
-	      { if (B[i] == 0) expected += C[i] ;
+	      { if (B[i] == sym) expected += C[i] ;
 		sum += C[i] ;	
 		if (sum >= target)
-		  { if (B[i] == 0) expected -= (sum - target) ;
+		  { if (B[i] == sym) expected -= (sum - target) ;
 		    break ;
 		  }
 	      }
-	    int actual = rsRankSyng (rs, target, 0, 0) ;
+	    int actual = rsRankSyng (rs, target, sym, 0) ;
 	    if (actual != expected)
 	      { rsPrint (rs) ;
-		die ("V %d callCount %d rank(%d,0) mismatch: expected %d, got %d",
-		     nVertex, callCount, target, expected, actual) ;
+		die ("V %d callCount %d rank(%d,%d) mismatch: expected %d, got %d",
+		     nVertex, callCount, target, sym, expected, actual) ;
 	      }
 	    totRank0 += actual ;
 	  }
@@ -1980,7 +2016,7 @@ int main (int argc, char *argv[])
   double total = nLinear + nFixed + nDynamic ;
   if (isCount) printf ("Total rsCount(0) = %'lld average %.1f\n", 
                        (long long)totCount0, totCount0/total) ;
-  if (isRank)  printf ("Total rsRank(len/2,0) = %'lld average %.1f\n", 
+  if (isRank)  printf ("Total rsRank(len/2,nSym/2) = %'lld average %.1f\n", 
                        (long long)totRank0, totRank0/total) ;
   if (isFind)  printf ("Total rsFind(len/2,&symbol) = %'lld average %.1f\n", 
                        (long long)totFind, totFind/total) ;
