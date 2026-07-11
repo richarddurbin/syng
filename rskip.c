@@ -119,18 +119,18 @@ char *rsErrorText (void) { return errorBuf ; }
 static int rsError (int errorCode, char *funcName, char *format, ...)
 {
   va_list args ;
-  int n = sprintf (errorBuf, "RS error in %s: ", funcName) ;
+  int n = snprintf (errorBuf, sizeof(errorBuf), "RS error in %s: ", funcName) ;
   va_start (args, format) ;
   switch (errorCode)
     {
     case RS_ERROR_EMPTY:
-      n += sprintf (errorBuf+n, "null pointer ") ; vsprintf (errorBuf+n, format, args) ; break ;
+      n += snprintf (errorBuf+n, sizeof(errorBuf)-n, "null pointer ") ; vsnprintf (errorBuf+n, sizeof(errorBuf)-n, format, args) ; break ;
     case RS_ERROR_SYMBOL_OVERFLOW:
-      n += sprintf (errorBuf+n, "symbol overflow ") ; vsprintf (errorBuf+n, format, args) ; break ;
+      n += snprintf (errorBuf+n, sizeof(errorBuf)-n, "symbol overflow ") ; vsnprintf (errorBuf+n, sizeof(errorBuf)-n, format, args) ; break ;
     case RS_ERROR_INDEX_OVERFLOW:
-      n += sprintf (errorBuf+n, "index overflow ") ; vsprintf (errorBuf+n, format, args) ; break ;
+      n += snprintf (errorBuf+n, sizeof(errorBuf)-n, "index overflow ") ; vsnprintf (errorBuf+n, sizeof(errorBuf)-n, format, args) ; break ;
     case RS_ERROR_LOCKED:
-      n += sprintf (errorBuf+n, "object locked ") ; vsprintf (errorBuf+n, format, args) ; break ;
+      n += snprintf (errorBuf+n, sizeof(errorBuf)-n, "object locked ") ; vsnprintf (errorBuf+n, sizeof(errorBuf)-n, format, args) ; break ;
     default:
       die ("unknown RS error code %d in %s", errorCode, funcName) ;
     }
