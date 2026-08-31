@@ -11,7 +11,11 @@
  */
 
 #include "syng.h"
+#ifdef USE_CSYNCMER
+#include "syncmer_iter.h"
+#else
 #include "seqhash.h"
+#endif
 
 extern int pathCount ;
 
@@ -117,7 +121,11 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
 	{ int j, nG = 0 ;
 	  char *s = seq ;
 	  for (j = 0 ; j < si->seqLen ; ++j)
+#ifdef USE_CSYNCMER
+	    if (*s++ != 'G') nG = 0 ;
+#else
 	    if (*s++ != 2) nG = 0 ;
+#endif
 	    else if (++nG > filterG) { filter = 'G' ; break ; }
 	}
       if (filterQ && si->avQ && si->avQ < filterQ) filter = 'Q' ;
@@ -215,6 +223,7 @@ static void *threadProcessRead (void* arg) // find the start positions of all th
   newFree (uBuf, ti->sms->kh->plen, U64) ;
   arrayDestroy (syncStack) ;
   arrayDestroy (posStack) ;
+  syncmerThreadCleanup () ; // frees the csyncmer thread-local SIMD buffers; no-op otherwise
   return 0 ;
 }
 
@@ -264,7 +273,11 @@ int main (int argc, char *argv[])
   oneFileClose (ofK) ; // we will read it using syncmerSetRead() below
   OneFile *ofGBWT = oneFileOpenRead (argv[1], schema, "gbwt", nThread) ;
   if (!ofGBWT) die ("failed to open .1gbwt file %s", argv[1]) ;
+#ifdef USE_CSYNCMER
+  SeqIO   *sio = seqIOopenRead (argv[2], dna2textN2AConv, true) ;
+#else
   SeqIO   *sio = seqIOopenRead (argv[2], dna2index4Conv, true) ;
+#endif
   if (!sio) die ("failed to open sequence file %s", argv[2]) ;
 
   // this will be our output file

@@ -12,6 +12,10 @@
 
 #include "kmerhash.h"
 
+#ifdef HAVE_AVX2
+#include "avx2.h"
+#endif
+
 static inline void Compress_DNA (int len, char *s, U64 *u) ;    // from s to u
 static inline void Compress_DNA_RC (int len, char *s, U64 *u) ; // from s to u
 static inline void Uncompress_DNA (int len, U64 *u, char *t) ;  // from u to t
@@ -23,7 +27,7 @@ KmerHash *kmerHashCreate (U64 initialSize, int len)
   kh->len = len ;
   kh->dim = 20 ;
   U64 size ;
-  for (size = 1 << kh->dim ; size < initialSize ; ++kh->dim, size <<= 1) ;
+  for (size = (U64)1 << kh->dim ; size < initialSize ; ++kh->dim, size <<= 1) ;
   kh->table = new0(size, I64) ;
   kh->mask = size - 1 ;
   kh->plen = (len+31) >> 5 ;
@@ -54,7 +58,7 @@ static U8 comp[] = {   /* sends N (indeed any non-CGT) to A, except 0,1,2,3 are 
    0,   0, 0,   0, 'a', 0, 0,   0, 0, 0, 0, 0, 0, 0,   0, 0
 } ;
 
-static inline bool isCanonical (char *dna, int len)
+bool isCanonical (char *dna, int len)
 {
   int x = -1, y = len ;
   while (dna[++x] == comp[(int)dna[--y]]) ;
@@ -63,8 +67,17 @@ static inline bool isCanonical (char *dna, int len)
 
 static inline bool isMatch (U64 *u, U64 *v, int n)
 {
-  while (n--) if (*u++ != *v++) return false ;
-  return true ;
+  switch (n) {
+    case 1: return u[0] == v[0] ;
+    case 2: return u[0] == v[0] && u[1] == v[1] ;
+    default:
+#ifdef HAVE_AVX2
+      return isMatchAVX2 (u, v, n) ;
+#else
+      while (n--) if (*u++ != *v++) return false ;
+      return true ;
+#endif
+  }
 }
 
 static inline U64 hashDelta (U64 *u, int plen, int dim)
@@ -127,8 +140,8 @@ bool kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and 
 static void doubleTable (KmerHash *kh)
 {
   ++kh->dim ;
-  I64 *newTable = new0 (((U64)1) << kh->dim, I64) ;
-  kh->mask = (1 << kh->dim) - 1 ;
+  I64 *newTable = new0 ((U64)1 << kh->dim, I64) ;
+  kh->mask = ((U64)1 << kh->dim) - 1 ;
   U64  i ;
   for (i = 1 ; i <= kh->max ; ++i) // remap all the packed sequences into newTable
     { U64 loc = *packseq(kh,i) & kh->mask ;
@@ -181,6 +194,12 @@ bool kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) // assume packed and c
   return true ;
 }
 
+bool kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC)
+{
+  U64 loc ;
+  return find (kh, u, index, isRC, &loc, false) ;
+}
+
 char* kmerHashSeq (KmerHash *kh, I64 i, char *buf) // user must provide buf to be threadsafe
 {
   bool isRC = false ;
@@ -219,7 +238,7 @@ bool kmerHashWriteOneFile (KmerHash *kh, OneFile *of)
   if (total) oneWriteLineDNA2bit (of, 'S', total << 5, (U8*)dna) ;
   
   // next find the locations of all the kmers and write them
-  I64 i, size = 1 << kh->dim, *loc0 = new(kh->max,I64), *loc = loc0 ;
+  I64 i, size = (I64)1 << kh->dim, *loc0 = new(kh->max,I64), *loc = loc0 ;
   for (i = 0 ; i < size ; ++i) if (kh->table[i]) loc[kh->table[i]-1] = i ;
   // similarly chunk the location buffer
   total = kh->max ;

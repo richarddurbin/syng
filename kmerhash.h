@@ -47,6 +47,9 @@ bool      kmerHashFindThreadSafe (KmerHash *kh, char *dna, I64 *index, U64 *buf)
 bool      kmerHashAddPacked (KmerHash *kh, U64 *u, I64 *index) ;
 bool      kmerHashFindPacked (KmerHash *kh, U64 *u, I64 *index) ; // true if found
 // these versions add/find already packed and correctly oriented kmers
+bool      kmerHashFindPackedThreadSafe (KmerHash *kh, U64 *u, I64 *index, bool isRC) ;
+
+bool      isCanonical (char *dna, int len) ; // true if dna < reverseComplement(dna)
 
 char*     kmerHashSeq (KmerHash *kh, I64 i, char *buf) ; // retrieve i'th sequence (rev-comp if i < 0)
                                                          // buf can be 0, but then not thread-safe

@@ -183,32 +183,51 @@ bool minimizerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF) /* retu
 
 /************ same for closed syncmer ***********/
 
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len) ;
+
 SeqhashIterator *syncmerIterator (Seqhash *sh, char *s, int len)
 {
   SeqhashIterator *si = seqhashIterator (sh, s, len) ;
-  if (len < sh->w + sh->k) si->isDone = true ; // because we are looking for w-mers not k-mers here
-  if (si->isDone) return si ;
-    
-  /* store first w hashes in hash and set ->min */
-  si->min = si->hash[0] ;
+  syncmerIteratorReinit (si, s, len) ; // the syncmer-specific setup, shared with reuse below
+  return si ;
+}
+
+void syncmerIteratorReinit (SeqhashIterator *si, char *s, int len)
+{
+  Seqhash *sh = si->sh ;
+  si->s = s ; si->sEnd = s + len ;
+  si->h = 0 ; si->hRC = 0 ;
+  si->base = 0 ; si->iStart = 0 ; si->iMin = 0 ;
+  si->min = 0 ;
+  si->isDone = false ;
+
+  if (len < sh->k) { si->isDone = true ; return ; }
+
+  /* reinitialise the hashes for the first kmer (same as seqhashIterator) */
   int i ;
+  for (i = 0 ; i < sh->k ; ++i, ++si->s)
+    { si->h = (si->h << 2) | *si->s ;
+      si->hRC = (si->hRC >> 2) | sh->patternRC[(int)*(si->s)] ;
+    }
+  *si->hash = hashRC (si, si->isForward) ;
+
+  /* now the syncmer-specific part (same as syncmerIterator) */
+  if (len < sh->w + sh->k) { si->isDone = true ; return ; }
+
+  si->min = si->hash[0] ;
   for (i = 1 ; i < sh->w ; ++i)
     { si->hash[i] = advanceHashRC (si, &si->isForward[i]) ;
       if (si->hash[i] < si->min) si->min = si->hash[i] ;
     }
 
-  // si->iStart = 0 ; // from initialisation
-  if (si->hash[0] == si->min || si->hash[sh->w-1] == si->min) return si ; // we are done
+  if (si->hash[0] == si->min || si->hash[sh->w-1] == si->min) return ;
   while (true)
     { U64 x = advanceHashRC (si, &si->isForward[si->iStart]) ;
-      if (si->s >= si->sEnd) { si->isDone = true ; return si ; }
+      if (si->s >= si->sEnd) { si->isDone = true ; return ; }
       si->hash[si->iStart++] = x ;
-      if (x <= si->min) // min at the end of the w-mer
-	{ si->min = x ; return si ; }
-      if (si->hash[si->iStart] == si->min) // min at the beginning of the w-mer
-	return si ;
+      if (x <= si->min) { si->min = x ; return ; }
+      if (si->hash[si->iStart] == si->min) return ;
     }
-  die ("syncmer initialisation failure") ;
 }
 
 bool syncmerNext (SeqhashIterator *si, U64 *kmer, int *pos, bool *isF)
